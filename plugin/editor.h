@@ -38,7 +38,7 @@ public:
   void paint(juce::Graphics &) override;
   void resized() override;
 
-  bool isInterestedInFileDrag(const juce::StringArray &) override { return brain() != nullptr; }
+  bool isInterestedInFileDrag(const juce::StringArray &) override { return controller() != nullptr; }
   void filesDropped(const juce::StringArray &, int, int) override;
 
 private:
@@ -47,6 +47,18 @@ private:
   std::vector<SamplebrainAudioModification *> clips() const;
   SamplebrainAudioModification *clip() const;
 
+  // What the editor last drew from. The clips are included because REAPER can
+  // assign them after the editor opens, without bumping the version.
+  struct Shown {
+    std::uint64_t version;
+    std::vector<SamplebrainAudioModification *> clips;
+    bool operator==(const Shown &) const = default;
+  };
+  Shown shown() const;
+
+  // Creates a brain and points the selected clip at it.
+  void new_brain();
+  // Adds samples to the brain, creating one first if there is none.
   void add_files(const juce::StringArray &);
   void refresh();
   void refresh_progress();
@@ -74,7 +86,7 @@ private:
 
   std::unique_ptr<juce::FileChooser> chooser_;
   juce::String brain_id_;
-  std::uint64_t seen_version_ = ~0ull;
+  std::optional<Shown> shown_;
 };
 
 } // namespace sb::plugin

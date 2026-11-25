@@ -111,13 +111,7 @@ SamplebrainEditor::SamplebrainEditor(SamplebrainProcessor &p)
       controller()->edit_clip(*c, [&](ClipSettings &s) { s.brain_id = brain_id_; });
     refresh();
   };
-  new_brain_.onClick = [this] {
-    if (auto *dc = controller()) {
-      brain_id_ = dc->add_brain().definition.id;
-      if (auto *c = clip())
-        dc->edit_clip(*c, [&](ClipSettings &s) { s.brain_id = brain_id_; });
-    }
-  };
+  new_brain_.onClick = [this] { new_brain(); };
   import_brain_.onClick = [this] {
     chooser_ = std::make_unique<juce::FileChooser>("Import brain", juce::File(), "*.brain");
     chooser_->launchAsync(juce::FileBrowserComponent::openMode, [this](const juce::FileChooser &fc) {
@@ -218,7 +212,21 @@ SamplebrainAudioModification *SamplebrainEditor::clip() const {
   return i >= 0 && i < int(all.size()) ? all[std::size_t(i)] : nullptr;
 }
 
+SamplebrainEditor::Shown SamplebrainEditor::shown() const {
+  auto *dc = controller();
+  return {dc ? dc->version() : 0, clips()};
+}
+
+void SamplebrainEditor::new_brain() {
+  if (auto *dc = controller()) {
+    brain_id_ = dc->add_brain().definition.id;
+    if (auto *c = clip())
+      dc->edit_clip(*c, [&](ClipSettings &s) { s.brain_id = brain_id_; });
+  }
+}
+
 void SamplebrainEditor::add_files(const juce::StringArray &paths) {
+  if (!brain()) new_brain();
   if (auto *dc = controller())
     dc->edit_brain(brain_id_, [&](BrainDefinition &d) {
       for (const auto &p : paths)
@@ -232,15 +240,14 @@ void SamplebrainEditor::filesDropped(const juce::StringArray &files, int, int) {
 }
 
 void SamplebrainEditor::timerCallback() {
-  auto *dc = controller();
-  if (dc && dc->version() != seen_version_) refresh();
+  if (shown() != shown_) refresh();
   refresh_progress();
 }
 
 void SamplebrainEditor::refresh() {
   auto *dc = controller();
   if (!dc) return;
-  seen_version_ = dc->version();
+  shown_ = shown();
 
   // The clips this instance plays.
   const auto all = clips();
@@ -267,7 +274,7 @@ void SamplebrainEditor::refresh() {
 
   BrainState *b = brain();
   for (auto *comp : std::initializer_list<juce::Component *>{
-           &samples_, &add_samples_, &remove_sample_, &build_, &export_brain_})
+           &samples_, &remove_sample_, &build_, &export_brain_})
     comp->setEnabled(b != nullptr);
   for (auto &control : brain_controls_) control->setEnabled(b != nullptr);
   if (b) {
