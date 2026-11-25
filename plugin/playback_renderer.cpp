@@ -72,7 +72,7 @@ bool SamplebrainPlaybackRenderer::render(juce::AudioBuffer<float> &buffer,
     for (std::size_t c = 0; c < out.size(); ++c) shifted[c] = out[c] + offset;
     const std::span<float *const> dst(shifted, out.size());
 
-    if (double(cache->rate) == rate_)
+    if (cache->rate == unsigned(std::lround(rate_)))
       play_slice(*cache->audio, std::llround(render_start), dst, std::size_t(count));
     else
       play_resampled(*cache->audio, render_start, cache->rate / rate_, dst, std::size_t(count));

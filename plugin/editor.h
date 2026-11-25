@@ -57,7 +57,8 @@ private:
   void listBoxItemClicked(int row, const juce::MouseEvent &) override;
 
   juce::ComboBox brain_box_;
-  juce::TextButton new_brain_{"+ New"}, export_brain_{"Export .brain"};
+  juce::TextButton new_brain_{"+ New"}, import_brain_{"Import .brain"},
+      export_brain_{"Export .brain"};
   juce::Label brain_users_;
   juce::ListBox samples_{"samples", this};
   juce::TextButton add_samples_{"Add..."}, remove_sample_{"Remove"};

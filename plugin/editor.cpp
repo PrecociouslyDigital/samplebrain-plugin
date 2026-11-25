@@ -79,7 +79,7 @@ void ParamControl::set_value(double value) {
   if (auto *box = dynamic_cast<juce::ComboBox *>(control_.get()))
     box->setSelectedItemIndex(int(value), juce::dontSendNotification);
   else if (auto *toggle = dynamic_cast<juce::ToggleButton *>(control_.get()))
-    toggle->setToggleState(value != 0, juce::dontSendNotification);
+    toggle->setToggleState(value > 0.5, juce::dontSendNotification);
   else if (auto *slider = dynamic_cast<juce::Slider *>(control_.get()))
     slider->setValue(value, juce::dontSendNotification);
 }
@@ -92,10 +92,10 @@ void ParamControl::resized() {
 
 // ---------------------------------------------------------------------------
 
-SamplebrainEditor::SamplebrainEditor(SamplebrainProcessor &processor)
-    : juce::AudioProcessorEditor(&processor), juce::AudioProcessorEditorARAExtension(&processor) {
+SamplebrainEditor::SamplebrainEditor(SamplebrainProcessor &p)
+    : juce::AudioProcessorEditor(&p), juce::AudioProcessorEditorARAExtension(&p) {
   for (auto *c : std::initializer_list<juce::Component *>{
-           &brain_box_, &new_brain_, &export_brain_, &brain_users_, &samples_, &add_samples_,
+           &brain_box_, &new_brain_, &import_brain_, &export_brain_, &brain_users_, &samples_, &add_samples_,
            &remove_sample_, &build_, &cancel_, &brain_status_, &clip_box_, &clip_status_,
            &clip_view_})
     addAndMakeVisible(c);
@@ -117,6 +117,18 @@ SamplebrainEditor::SamplebrainEditor(SamplebrainProcessor &processor)
       if (auto *c = clip())
         dc->edit_clip(*c, [&](ClipSettings &s) { s.brain_id = brain_id_; });
     }
+  };
+  import_brain_.onClick = [this] {
+    chooser_ = std::make_unique<juce::FileChooser>("Import brain", juce::File(), "*.brain");
+    chooser_->launchAsync(juce::FileBrowserComponent::openMode, [this](const juce::FileChooser &fc) {
+      if (auto *dc = controller(); dc && fc.getResult() != juce::File())
+        dc->import_brain(fc.getResult(), [this, safe = juce::Component::SafePointer(this)](const juce::String &id) {
+          if (!safe) return;
+          brain_id_ = id;
+          if (auto *c = clip())
+            controller()->edit_clip(*c, [&](ClipSettings &s) { s.brain_id = id; });
+        });
+    });
   };
   export_brain_.onClick = [this] {
     chooser_ = std::make_unique<juce::FileChooser>("Export brain", juce::File(), "*.brain");
@@ -284,7 +296,10 @@ void SamplebrainEditor::refresh() {
 void SamplebrainEditor::refresh_progress() {
   BrainState *b = brain();
   juce::String text;
-  if (b && b->build) text = to_juce(b->build->text());
+  auto *dc = controller();
+  if (dc && dc->import_progress()) text = to_juce(dc->import_progress()->text());
+  else if (dc && !dc->import_error().empty()) text = to_juce(dc->import_error());
+  else if (b && b->build) text = to_juce(b->build->text());
   else if (b && !b->error.empty()) text = to_juce(b->error);
   brain_status_.setText(text, juce::dontSendNotification);
   cancel_.setEnabled(b && b->build);
@@ -367,6 +382,8 @@ void SamplebrainEditor::resized() {
   brain_box_.setBounds(top.removeFromLeft(220));
   top.removeFromLeft(gap);
   new_brain_.setBounds(top.removeFromLeft(70));
+  top.removeFromLeft(gap);
+  import_brain_.setBounds(top.removeFromLeft(110));
   top.removeFromLeft(gap);
   export_brain_.setBounds(top.removeFromLeft(110));
   top.removeFromLeft(gap);

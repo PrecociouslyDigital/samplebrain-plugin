@@ -115,6 +115,46 @@ EngineService::brain(const BrainDefinition &definition, const LoadedSounds &soun
   return LoadedBrain{sounds.key, *built};
 }
 
+std::expected<ImportedBrain, std::string>
+EngineService::import_brain(const juce::File &file) {
+  report_progress("reading " + file.getFileName().toStdString());
+  auto brain = load_brain(file.getFullPathName().toStdString());
+  if (!brain) return std::unexpected("couldn't read " + file.getFileName().toStdString());
+
+  const juce::File dir = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                             .getChildFile("samplebrain-plugin/imported")
+                             .getChildFile(file.getFileNameWithoutExtension() + "-" +
+                                           juce::Uuid().toString().substring(0, 8));
+  if (!dir.createDirectory()) return std::unexpected("couldn't create " + dir.getFullPathName().toStdString());
+
+  ImportedBrain imported{{}, {}, {}, brain->rate()};
+  imported.definition.name = file.getFileNameWithoutExtension();
+  imported.definition.settings = brain_settings(*brain);
+  int index = 0;
+  for (const Sound &sound : brain_sounds(*brain)) {
+    const juce::String name = juce::File::createLegalFileName(
+        juce::String(++index).paddedLeft('0', 3) + " " +
+        juce::File(juce::String(sound.name)).getFileNameWithoutExtension() + ".wav");
+    const juce::File path = dir.getChildFile(name);
+    if (auto written = write_wav(path.getFullPathName().toStdString(), sound.audio, imported.rate); !written)
+      return std::unexpected(written.error().message);
+    imported.definition.samples.push_back({path.getFullPathName(), true});
+  }
+
+  auto sounds = load_sounds(imported.definition, imported.rate);
+  if (!sounds) return std::unexpected(sounds.error());
+  imported.sounds = *sounds;
+  report_progress("saving brain");
+  brain_disk_.store(brain_file(sounds->key), [&](const std::filesystem::path &p) {
+    return bool(save_brain(*brain, p.string()));
+  });
+  auto shared = std::make_shared<const Brain>(std::move(*brain));
+  auto cached = brains_.get(sounds->key, [&] { return decltype(brains_)::Result(shared); });
+  if (!cached) return std::unexpected(cached.error());
+  imported.brain = LoadedBrain{sounds->key, *cached};
+  return imported;
+}
+
 std::expected<void, std::string> EngineService::export_brain(const LoadedBrain &brain,
                                                              const juce::File &file) {
   if (!save_brain(*brain.brain, file.getFullPathName().toStdString()))

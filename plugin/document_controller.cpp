@@ -149,8 +149,7 @@ void SamplebrainDocumentController::refresh_keys(BrainState &brain) {
         b->error = error;
         if (sounds) b->current.insert_or_assign(rate, *sounds);
         if (built) {
-          std::vector<juce::String> paths;
-          for (const auto &s : definition.samples) paths.push_back(s.path);
+          const std::vector<juce::String> paths = definition.paths();
           b->playing.insert_or_assign(rate, PlayingBrain{*built, paths});
           dc.render_brain_clips(definition.id);
         }
@@ -203,8 +202,7 @@ void SamplebrainDocumentController::build_brain(const juce::String &id) {
       if (!b) return;
       b->build.reset();
       b->error = error;
-      std::vector<juce::String> paths;
-      for (const auto &s : definition.samples) paths.push_back(s.path);
+      const std::vector<juce::String> paths = definition.paths();
       for (const auto &[rate, brain] : built) {
         b->playing.insert_or_assign(rate, PlayingBrain{brain, paths});
         if (b->revision == revision) b->current.insert_or_assign(rate, sounds.at(rate));
@@ -230,6 +228,40 @@ void SamplebrainDocumentController::export_brain(const juce::String &id,
     post(self, [=](SamplebrainDocumentController &dc) {
       if (BrainState *b = dc.find_brain(id)) b->error = result ? "" : result.error();
       dc.changed();
+    });
+  });
+}
+
+void SamplebrainDocumentController::import_brain(
+    const juce::File &file, std::function<void(const juce::String &)> done) {
+  if (import_) return;
+  import_ = std::make_shared<JobProgress>();
+  import_error_.clear();
+  changed();
+  engine_->pool().addJob([engine = engine_, self = juce::WeakReference(this), file,
+                          progress = import_, done = std::move(done)] {
+    ProgressScope scope(progress.get());
+    std::expected<ImportedBrain, std::string> imported = std::unexpected("cancelled");
+    try {
+      imported = engine->import_brain(file);
+    } catch (const Cancelled &) {
+    } catch (const std::exception &e) {
+      imported = std::unexpected(e.what());
+    }
+    post(self, [=, imported = std::move(imported)](SamplebrainDocumentController &dc) {
+      dc.import_.reset();
+      if (!imported) {
+        dc.import_error_ = imported.error();
+        dc.changed();
+        return;
+      }
+      auto &brain = *dc.brains_.emplace_back(std::make_unique<BrainState>());
+      brain.definition = imported->definition;
+      const std::vector<juce::String> paths = brain.definition.paths();
+      brain.playing.emplace(imported->rate, PlayingBrain{imported->brain, paths});
+      brain.current.emplace(imported->rate, imported->sounds);
+      dc.changed();
+      done(brain.definition.id);
     });
   });
 }

@@ -91,6 +91,11 @@ public:
   void build_brain(const juce::String &id);
   void cancel_build(const juce::String &id);
   void export_brain(const juce::String &id, const juce::File &);
+  // Adds a brain read from a .brain file, and calls done with its id.
+  void import_brain(const juce::File &, std::function<void(const juce::String &)> done);
+  // Progress of an import, if one is running.
+  std::shared_ptr<JobProgress> import_progress() const { return import_; }
+  const std::string &import_error() const { return import_error_; }
   int clips_using(const juce::String &brain_id);
 
   // Re-renders the clip after a short pause.
@@ -137,6 +142,8 @@ private:
   ReaderRegistry readers_;
   std::atomic<bool> editing_ = false;
   std::vector<std::unique_ptr<BrainState>> brains_;
+  std::shared_ptr<JobProgress> import_;
+  std::string import_error_;
   std::uint64_t version_ = 0;
 
   JUCE_DECLARE_WEAK_REFERENCEABLE(SamplebrainDocumentController)

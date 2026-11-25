@@ -24,10 +24,10 @@ struct BrainDefinition {
   std::vector<BrainSample> samples;
   BrainSettings settings;
 
-  std::vector<bool> sound_enabled() const {
-    std::vector<bool> enabled;
-    for (const BrainSample &s : samples) enabled.push_back(s.enabled);
-    return enabled;
+  std::vector<juce::String> paths() const {
+    std::vector<juce::String> paths;
+    for (const BrainSample &s : samples) paths.push_back(s.path);
+    return paths;
   }
 };
 

@@ -37,6 +37,14 @@ struct LoadedBrain {
   std::shared_ptr<const Brain> brain;
 };
 
+// A brain read from a .brain file, with its sounds saved as samples.
+struct ImportedBrain {
+  BrainDefinition definition;
+  LoadedSounds sounds;
+  LoadedBrain brain;
+  unsigned rate;
+};
+
 struct LoadedTarget {
   TargetKey key;
   std::shared_ptr<const Target> target;
@@ -85,6 +93,10 @@ public:
 
   // A brain by key alone, for when its sounds can't be read.
   std::optional<LoadedBrain> cached_brain(const BrainKey &);
+
+  // Reads a .brain file. Its sounds become WAV files in the user's
+  // application data, and the brain is cached under the key they give.
+  std::expected<ImportedBrain, std::string> import_brain(const juce::File &);
 
   // Writes the brain to a user-chosen .brain file.
   std::expected<void, std::string> export_brain(const LoadedBrain &,

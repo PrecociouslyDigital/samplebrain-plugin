@@ -155,16 +155,20 @@ concept Settings = requires(S &s) {
   visit_settings(s, [](const ParamInfo &, auto &) {});
 };
 
+// A field only ever meets its own kind of parameter. Other pairings are
+// never reached and leave the value alone.
 template <class T> T clamp_to(const ParamKind &kind, T value) {
   return std::visit(
       [&](const auto &k) -> T {
         using K = std::remove_cvref_t<decltype(k)>;
-        if constexpr (std::is_same_v<K, ChoiceParam>)
+        if constexpr (!std::is_same_v<typename K::value_type, T>)
+          return value;
+        else if constexpr (std::is_same_v<K, ChoiceParam>)
           return std::clamp<int>(value, 0, int(k.labels.size()) - 1);
         else if constexpr (std::is_same_v<K, BoolParam>)
           return value;
         else
-          return std::clamp<typename K::value_type>(value, k.min, k.max);
+          return std::clamp<T>(value, k.min, k.max);
       },
       kind);
 }
