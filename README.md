@@ -4,7 +4,8 @@
 from a *brain* of other sounds. This is Samplebrain as an ARA plugin: the target is a clip on your
 DAW's timeline, and the plugin renders it ahead of time and plays the result back from a cache.
 
-It builds as VST3 and AU for Apple Silicon. REAPER is the host it's tested in.
+It builds as VST3 and AU for Apple Silicon. REAPER is the host it's tested in, and REAPER only
+runs ARA through VST3 on macOS, so use the VST3 there.
 
 ## Building
 
