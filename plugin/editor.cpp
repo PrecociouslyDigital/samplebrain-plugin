@@ -114,7 +114,9 @@ SamplebrainEditor::SamplebrainEditor(SamplebrainProcessor &p)
   new_brain_.onClick = [this] { new_brain(); };
   import_brain_.onClick = [this] {
     chooser_ = std::make_unique<juce::FileChooser>("Import brain", juce::File(), "*.brain");
-    chooser_->launchAsync(juce::FileBrowserComponent::openMode, [this](const juce::FileChooser &fc) {
+    chooser_->launchAsync(juce::FileBrowserComponent::openMode |
+                              juce::FileBrowserComponent::canSelectFiles,
+                          [this](const juce::FileChooser &fc) {
       if (auto *dc = controller(); dc && fc.getResult() != juce::File())
         dc->import_brain(fc.getResult(), [this, safe = juce::Component::SafePointer(this)](const juce::String &id) {
           if (!safe) return;
@@ -135,6 +137,7 @@ SamplebrainEditor::SamplebrainEditor(SamplebrainProcessor &p)
     chooser_ = std::make_unique<juce::FileChooser>("Add samples", juce::File(),
                                                    "*.wav;*.aif;*.aiff;*.flac;*.ogg;*.mp3");
     chooser_->launchAsync(juce::FileBrowserComponent::openMode |
+                              juce::FileBrowserComponent::canSelectFiles |
                               juce::FileBrowserComponent::canSelectMultipleItems,
                           [this](const juce::FileChooser &fc) {
                             juce::StringArray paths;
