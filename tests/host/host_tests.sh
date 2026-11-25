@@ -55,6 +55,13 @@ is_zero() { number "$1" && [ "$(python3 -c "print(float('$1') == 0)")" = True ];
 not_zero() { number "$1" && ! is_zero "$1"; }
 brains() { ls "$HOME/Library/Caches/samplebrain-plugin/brains" | wc -l | tr -d ' '; }
 
+# REAPER takes a clip's sample access away soon after a scripted project
+# opens, so a render still waiting for a new brain comes out silent. Build
+# each rate's brain once first, with time to finish.
+for rate in 44100 48000; do
+  SB_DELAY=15 make_project "warm${rate:0:2}" "clip${rate:0:2}.wav" "$rate"
+done
+
 for rate in 44100 48000; do
   short=${rate:0:2}
   make_project "r$short" "clip$short.wav" "$rate"
