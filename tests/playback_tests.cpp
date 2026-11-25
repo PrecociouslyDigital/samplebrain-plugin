@@ -42,3 +42,27 @@ TEST_CASE("playback equals the matching slice of the render") {
     }
   }
 }
+
+TEST_CASE("resampled playback at the render's own rate equals the slice") {
+  const auto seed = GENERATE(take(100, random(0u, 1u << 30)));
+  std::mt19937 rng(seed);
+  auto between = [&](std::int64_t lo, std::int64_t hi) {
+    return std::uniform_int_distribution<std::int64_t>(lo, hi)(rng);
+  };
+
+  RenderedAudio render;
+  render.channels.resize(std::size_t(between(1, 2)));
+  const auto length = std::size_t(between(0, 3000));
+  for (Mono &c : render.channels) {
+    c.resize(length);
+    for (float &s : c) s = float(between(-1000, 1000));
+  }
+  const std::int64_t start = between(-4000, 4000);
+  const auto frames = std::size_t(between(0, 1024));
+  Mono sliced(frames), resampled(frames);
+  float *a[] = {sliced.data()}, *b[] = {resampled.data()};
+
+  play_slice(render, start, a, frames);
+  play_resampled(render, double(start), 1.0, b, frames);
+  CHECK(sliced == resampled);
+}

@@ -8,7 +8,7 @@
       flake = false;
     };
     ara-sdk = {
-      url = "git+https://github.com/Celemony/ARA_SDK?ref=refs/tags/releases/2.2.0&submodules=1";
+      url = "git+https://github.com/Celemony/ARA_SDK?ref=refs/tags/releases/2.3.0&submodules=1";
       flake = false;
     };
     samplebrain = {

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sydney <sydney@hyphen-emdash.com>
 Date: Tue, 24 Nov 2026 20:04:21 -0800
-Subject: [PATCH 3/6] Add brain::add_sound for sounds already in memory
+Subject: [PATCH 3/7] Add brain::add_sound for sounds already in memory
 
 load_sound read a file and added it in one step. Hosts that already have
 the audio, like a plugin reading from its DAW, can now add it directly.

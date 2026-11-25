@@ -218,8 +218,7 @@ std::expected<void, BrainError> save_brain(const Brain &brain,
   return {};
 }
 
-std::expected<Brain, BrainError> load_brain(const std::string &path,
-                                            unsigned rate) {
+std::expected<Brain, BrainError> load_brain(const std::string &path) {
   std::ifstream file(path, std::ios::binary);
   if (!file) return std::unexpected(BrainError{BrainError::UnreadableFile});
   auto b = std::make_unique<spiralcore::brain>();
@@ -227,7 +226,26 @@ std::expected<Brain, BrainError> load_brain(const std::string &path,
   if (!file) return std::unexpected(BrainError{BrainError::UnreadableFile});
   if (b->get_num_blocks() == 0)
     return std::unexpected(BrainError{BrainError::NoBlocks});
+  const unsigned rate = b->get_block(0).get_rate();
   return CoreAccess::make_brain(std::move(b), rate);
+}
+
+std::vector<Sound> brain_sounds(const Brain &brain) {
+  std::vector<Sound> sounds;
+  for (const auto &s : CoreAccess::upstream(brain).get_samples()) {
+    const float *data = s.m_sample.get_buffer();
+    sounds.push_back({s.m_filename, Mono(data, data + s.m_sample.get_length())});
+  }
+  return sounds;
+}
+
+BrainSettings brain_settings(const Brain &brain) {
+  const spiralcore::brain &b = CoreAccess::upstream(brain);
+  BrainSettings settings;
+  settings.block_size = int(b.get_block_size());
+  settings.overlap = float(b.get_overlap()) / float(b.get_block_size());
+  settings.window = int(b.get_window_type());
+  return settings;
 }
 
 } // namespace sb

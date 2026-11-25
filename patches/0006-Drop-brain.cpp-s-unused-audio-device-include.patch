@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sydney <sydney@hyphen-emdash.com>
 Date: Tue, 24 Nov 2026 20:12:31 -0800
-Subject: [PATCH 6/6] Drop brain.cpp's unused audio device include
+Subject: [PATCH 6/7] Drop brain.cpp's unused audio device include
 
 brain.cpp included spiralcore/audio.h, and with it PortAudio, without
 using either. Building the brain without an audio device no longer needs

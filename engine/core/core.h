@@ -119,11 +119,13 @@ render_in_chunks(const Brain &, const Target &, const RenderSettings &,
                  unsigned chunk_size);
 } // namespace testing
 
-// Upstream's .brain format, shared with the app. A brain doesn't record
-// the rate it was built at, so loading needs to be told.
+// Upstream's .brain format, shared with the app.
 std::expected<void, BrainError> save_brain(const Brain &,
                                            const std::string &path);
-std::expected<Brain, BrainError> load_brain(const std::string &path,
-                                            unsigned rate);
+std::expected<Brain, BrainError> load_brain(const std::string &path);
+
+// What a brain was built from, so it can be built again the same way.
+std::vector<Sound> brain_sounds(const Brain &);
+BrainSettings brain_settings(const Brain &);
 
 } // namespace sb

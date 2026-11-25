@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sydney <sydney@hyphen-emdash.com>
 Date: Tue, 24 Nov 2026 20:04:37 -0800
-Subject: [PATCH 4/6] Tell callers when the renderer finishes a pass
+Subject: [PATCH 4/7] Tell callers when the renderer finishes a pass
 
 The renderer quietly started again from the beginning when it ran off the
 end of the target. completed_pass() now says when that happened, and

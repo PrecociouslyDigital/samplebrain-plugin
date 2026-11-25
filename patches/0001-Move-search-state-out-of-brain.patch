@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sydney <sydney@hyphen-emdash.com>
 Date: Tue, 24 Nov 2026 20:03:40 -0800
-Subject: [PATCH 1/6] Move search state out of brain
+Subject: [PATCH 1/7] Move search state out of brain
 
 A search used to change the brain it searched: block usage, the current
 block index, the current error and the jiggle all lived on the brain, and

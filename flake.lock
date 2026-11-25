@@ -3,17 +3,17 @@
     "ara-sdk": {
       "flake": false,
       "locked": {
-        "lastModified": 1667824305,
-        "narHash": "sha256-5pkp0ukCRrGTzaenzW4gCRZADg/ihNVbr334jJK6DgY=",
-        "ref": "refs/tags/releases/2.2.0",
-        "rev": "98be7094b16b16fecd84e71c771b49b482d7191c",
-        "revCount": 67,
+        "lastModified": 1762430266,
+        "narHash": "sha256-t4VTZQid9Uks4Y6TgKZOqGmG+Gce7N9d01+1UsMJ5ZY=",
+        "ref": "refs/tags/releases/2.3.0",
+        "rev": "f9a07544a6e7a068cacb6dc5dbcc7ad0df2a0deb",
+        "revCount": 320,
         "submodules": true,
         "type": "git",
         "url": "https://github.com/Celemony/ARA_SDK"
       },
       "original": {
-        "ref": "refs/tags/releases/2.2.0",
+        "ref": "refs/tags/releases/2.3.0",
         "submodules": true,
         "type": "git",
         "url": "https://github.com/Celemony/ARA_SDK"

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sydney <sydney@hyphen-emdash.com>
 Date: Tue, 24 Nov 2026 20:08:07 -0800
-Subject: [PATCH 5/6] Give sounds shorter than one block an empty range
+Subject: [PATCH 5/7] Give sounds shorter than one block an empty range
 
 chop_and_add sets a sound's end to the last block index. When the first
 sound is shorter than one block there are no blocks yet, so its end

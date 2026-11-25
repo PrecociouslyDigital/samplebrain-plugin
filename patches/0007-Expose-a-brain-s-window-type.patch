@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sydney <sydney@hyphen-emdash.com>
+Date: Tue, 24 Nov 2026 20:53:32 -0800
+Subject: [PATCH 7/7] Expose a brain's window type
+
+A loaded brain already told you its block size and overlap, but not
+which window it was built with, so there was no way to rebuild it the
+same way.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ brain/src/brain.h  | 1 +
+ brain/src/window.h | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/brain/src/brain.h b/brain/src/brain.h
+index f15b97c..d9b2fdd 100644
+--- a/brain/src/brain.h
++++ b/brain/src/brain.h
+@@ -54,6 +54,7 @@ public:
+ 
+     virtual const block &get_block(u32 index) const;
+     virtual u32 get_num_blocks() const { return m_blocks.size(); }
++    window::type get_window_type() const { return m_window.get_current_type(); }
+ 
+     // basic search
+     u32 search(const block &target, const search_params &params, search_state &state) const;
+diff --git a/brain/src/window.h b/brain/src/window.h
+index 2992a42..76d72a0 100644
+--- a/brain/src/window.h
++++ b/brain/src/window.h
+@@ -42,6 +42,7 @@ public:
+     };
+ 
+     void set_current_type(type t) { m_current_type=t; }
++    type get_current_type() const { return m_current_type; }
+     void run(const sample &sample) const;
+ 
+     friend ios &operator||(ios &s, window &b);

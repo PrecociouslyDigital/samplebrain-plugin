@@ -9,5 +9,5 @@ add_executable(engine_tests
   render_tests.cpp
   settings_tests.cpp
 )
-target_link_libraries(engine_tests PRIVATE samplebrain_engine PkgConfig::sndfile Catch2::Catch2WithMain)
+target_link_libraries(engine_tests PRIVATE samplebrain_engine Catch2::Catch2WithMain)
 catch_discover_tests(engine_tests)

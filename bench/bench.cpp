@@ -96,7 +96,7 @@ int main(int argc, char **argv) {
       std::filesystem::temp_directory_path() / "samplebrain-bench.brain";
   timed("save_brain", [&] { return save_brain(brain, brain_path.string()); });
   const Brain loaded = timed(
-      "load_brain", [&] { return *load_brain(brain_path.string(), rate); });
+      "load_brain", [&] { return *load_brain(brain_path.string()); });
   std::cout << std::format("| .brain file size | {:.0f} MB |\n",
                            double(std::filesystem::file_size(brain_path)) / 1e6);
   std::filesystem::remove(brain_path);

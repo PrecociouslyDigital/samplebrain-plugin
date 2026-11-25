@@ -98,10 +98,11 @@ TEST_CASE("stereo renders each side separately") {
 TEST_CASE("a loaded brain renders like the brain that was saved") {
   const auto path = temp_path("roundtrip.brain");
   REQUIRE(save_brain(shared_brain(), path.string()));
-  const auto loaded = load_brain(path.string(), 44100);
+  const auto loaded = load_brain(path.string());
   std::filesystem::remove(path);
   REQUIRE(loaded);
   CHECK(loaded->num_blocks() == shared_brain().num_blocks());
+  CHECK(loaded->rate() == 44100);
 
   const int algorithm = GENERATE(range(0, 4));
   const RenderSettings settings = render_settings(algorithm, 11);
@@ -132,4 +133,19 @@ TEST_CASE("a sound shorter than one block adds no blocks") {
   REQUIRE(brain);
   CHECK(brain->num_blocks() == expected_blocks(44100, 512, 256));
   CHECK(render(*brain, shared_target(), render_settings(0, 0)));
+}
+
+TEST_CASE("a brain rebuilt from its own sounds and settings renders the same") {
+  BrainSettings settings = small_brain_settings();
+  settings.overlap = GENERATE(0.f, 0.33f, 0.5f);
+  settings.window = GENERATE(0, 2, 7);
+  const auto original = analyse_brain(small_sounds(), settings, 44100);
+  REQUIRE(original);
+
+  const auto rebuilt =
+      analyse_brain(brain_sounds(*original), brain_settings(*original), original->rate());
+  REQUIRE(rebuilt);
+  const RenderSettings render_with = render_settings(GENERATE(0, 2), 4);
+  CHECK(*render(*rebuilt, shared_target(), render_with) ==
+        *render(*original, shared_target(), render_with));
 }

@@ -16,4 +16,8 @@ struct AudioFileError {
 std::expected<ClipAudio, AudioFileError>
 read_audio_file(const std::filesystem::path &, unsigned rate);
 
+// Writes 32-bit float WAV, so reading it back gives the same samples.
+std::expected<void, AudioFileError>
+write_wav(const std::filesystem::path &, const Mono &, unsigned rate);
+
 } // namespace sb

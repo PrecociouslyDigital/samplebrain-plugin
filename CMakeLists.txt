@@ -18,7 +18,13 @@ option(SB_BUILD_PLUGIN "Build the plugin" ON)
 option(SB_RTSAN "Check the audio callback with RealtimeSanitizer" OFF)
 set(SB_SANITIZE "" CACHE STRING "Sanitizer for the engine and tests: address or thread")
 
-set(SAMPLEBRAIN_SRC "$ENV{SAMPLEBRAIN_SRC}" CACHE PATH "Patched upstream samplebrain source")
+# The nix shell's paths change whenever an input or patch does, so they
+# replace whatever an earlier configure cached.
+foreach(var SAMPLEBRAIN_SRC JUCE_DIR ARA_SDK_DIR)
+  if(DEFINED ENV{${var}})
+    set(${var} "$ENV{${var}}" CACHE PATH "From the nix shell" FORCE)
+  endif()
+endforeach()
 if(NOT EXISTS "${SAMPLEBRAIN_SRC}/brain/src/brain.h")
   message(FATAL_ERROR "SAMPLEBRAIN_SRC must point at patched samplebrain source; run inside `nix develop`")
 endif()

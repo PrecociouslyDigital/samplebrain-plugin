@@ -49,4 +49,20 @@ read_audio_file(const std::filesystem::path &path, unsigned rate) {
   return clip;
 }
 
+std::expected<void, AudioFileError>
+write_wav(const std::filesystem::path &path, const Mono &audio, unsigned rate) {
+  SF_INFO info{};
+  info.samplerate = int(rate);
+  info.channels = 1;
+  info.format = SF_FORMAT_WAV | SF_FORMAT_FLOAT;
+  std::unique_ptr<SNDFILE, decltype(&sf_close)> file(
+      sf_open(path.c_str(), SFM_WRITE, &info), &sf_close);
+  if (!file ||
+      sf_writef_float(file.get(), audio.data(), sf_count_t(audio.size())) !=
+          sf_count_t(audio.size()))
+    return std::unexpected(AudioFileError{
+        std::format("{}: {}", path.string(), sf_strerror(file.get()))});
+  return {};
+}
+
 } // namespace sb

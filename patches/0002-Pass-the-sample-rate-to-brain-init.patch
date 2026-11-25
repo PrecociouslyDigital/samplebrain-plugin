@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sydney <sydney@hyphen-emdash.com>
 Date: Tue, 24 Nov 2026 20:04:13 -0800
-Subject: [PATCH 2/6] Pass the sample rate to brain::init
+Subject: [PATCH 2/7] Pass the sample rate to brain::init
 
 brain::chop_and_add built every block at 44100, whatever the rate of the
 sound. The rate is now an argument to brain::init. Blocks already stored
