@@ -116,4 +116,18 @@ TEST_CASE("a length shows the controls for its unit") {
   CHECK(length_param_applies(length, "note"));
   CHECK(length_param_applies(length, "feel"));
   CHECK(length_param_applies(length, "unit"));
+  CHECK(length_param_applies(length, "project_tempo"));
+  CHECK(!length_param_applies(length, "bpm"));
+  length.project_tempo = false;
+  CHECK(length_param_applies(length, "bpm"));
+}
+
+TEST_CASE("a note length with its own tempo ignores the project's") {
+  BlockLength length;
+  length.unit = 1;
+  length.note = 0;
+  length.project_tempo = false;
+  length.bpm = 60.f;
+  for (double project_bpm : {60.0, 90.0, 174.0})
+    CHECK(block_samples(length, 48000, project_bpm) == 48000);
 }

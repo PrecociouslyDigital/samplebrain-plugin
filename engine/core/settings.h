@@ -103,7 +103,9 @@ inline constexpr std::string_view feel_labels[] = {"straight", "triplet",
   X(unit, PREFIX " in",     (ChoiceParam{length_unit_labels, 0}))           \
   X(ms,   PREFIX " (ms)",   (FloatParam{0.5f, 2000.f, 22.7f}))              \
   X(note, PREFIX " (note)", (ChoiceParam{note_labels, 4}))                  \
-  X(feel, PREFIX " feel",   (ChoiceParam{feel_labels, 0}))
+  X(feel, PREFIX " feel",   (ChoiceParam{feel_labels, 0}))                  \
+  X(project_tempo, "Project tempo", (BoolParam{true}))                      \
+  X(bpm,           "Tempo (BPM)",   (FloatParam{20.f, 300.f, 120.f}))
 // clang-format on
 
 #define SB_FIELD(name, label, kind)                                            \
@@ -210,11 +212,12 @@ template <class T> T clamp_to(const ParamKind &kind, T value) {
       kind);
 }
 
-// Samples per block at a rate. The tempo (quarter notes per minute) only
-// matters for note lengths.
-inline int block_samples(const BlockLength &length, unsigned rate, double bpm) {
+// Samples per block at a rate. Note lengths use project_bpm (quarter notes
+// per minute) unless the length turns off "Project tempo" and sets its own.
+inline int block_samples(const BlockLength &length, unsigned rate, double project_bpm) {
   constexpr double feel_scale[] = {1.0, 2.0 / 3.0, 1.5};
   const double quarters = 4.0 / double(4 << length.note) * feel_scale[length.feel];
+  const double bpm = length.project_tempo ? project_bpm : double(length.bpm);
   const double seconds =
       length.in_notes() ? quarters * 60.0 / bpm : double(length.ms) / 1000.0;
   return int(std::lround(seconds * double(rate)));
@@ -223,7 +226,8 @@ inline int block_samples(const BlockLength &length, unsigned rate, double bpm) {
 // Whether a length control matches the chosen unit.
 inline bool length_param_applies(const BlockLength &length, std::string_view id) {
   if (id == "ms") return !length.in_notes();
-  if (id == "note" || id == "feel") return length.in_notes();
+  if (id == "note" || id == "feel" || id == "project_tempo") return length.in_notes();
+  if (id == "bpm") return length.in_notes() && !length.project_tempo;
   return true;
 }
 
