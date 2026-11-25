@@ -13,8 +13,7 @@ namespace {
 
 constexpr int timer_ms = 50;
 // Re-rendering waits this long after a change, so dragging a slider doesn't
-// start a render for every step. A clip's first render skips the wait:
-// REAPER takes back sample access about half a second after creating it.
+// start a render for every step. A clip's first render starts straight away.
 const juce::RelativeTime render_pause = juce::RelativeTime::milliseconds(300);
 
 // For clips the host gives no tempo for.
@@ -108,7 +107,7 @@ RenderStatus SamplebrainAudioModification::status() const {
 void SamplebrainAudioModification::update_pending() {
   const auto *waiting = std::get_if<Waiting>(&plan_);
   pending_ = scheduled() || std::holds_alternative<Rendering>(status()) ||
-             (waiting && waiting->for_brain);
+             (waiting && waiting->busy);
 }
 
 bool BrainState::needs_build() const {
@@ -409,6 +408,8 @@ void SamplebrainDocumentController::changed() {
   const auto now = juce::Time::getCurrentTime();
   bool scheduled = false;
   for (auto *m : modifications()) {
+    if (std::holds_alternative<Unread>(m->audio) && m->getAudioSource()->isSampleAccessEnabled())
+      read_audio(*m);
     m->want(wanted(*m), now);
     scheduled |= m->scheduled();
   }
@@ -418,8 +419,12 @@ void SamplebrainDocumentController::changed() {
 std::variant<Waiting, RenderInputs>
 SamplebrainDocumentController::wanted(SamplebrainAudioModification &m) {
   auto *source = m.getAudioSource();
-  if (!source->isSampleAccessEnabled())
+  if (std::holds_alternative<Unread>(m.audio))
     return Waiting{"waiting for the host to share the clip's audio"};
+  if (std::holds_alternative<ReadingAudio>(m.audio)) return Waiting{"reading the clip", true};
+  if (const auto *failed = std::get_if<ReadFailed>(&m.audio))
+    return Waiting{"couldn't read the clip: " + failed->message};
+  const auto &audio = std::get<std::shared_ptr<const ClipAudio>>(m.audio);
   BrainState *brain = find_brain(m.settings.brain_id);
   if (!brain) return Waiting{"choose a brain"};
   const auto rate = unsigned(source->getSampleRate());
@@ -430,7 +435,47 @@ SamplebrainDocumentController::wanted(SamplebrainAudioModification &m) {
   RenderSettings render = m.settings.render;
   render.sound_enabled = brain->sound_enabled(playing->second);
   return RenderInputs{playing->second.brain, m.settings.target_at(rate, clip_tempo(m)), render,
-                      rate, m.content};
+                      rate, audio};
+}
+
+void SamplebrainDocumentController::read_audio(SamplebrainAudioModification &m) {
+  m.audio = ReadingAudio{};
+  auto reader = std::make_shared<juce::ARAAudioSourceReader>(m.getAudioSource());
+  engine_->pool().addJob([self = juce::WeakReference(this), mod = juce::WeakReference(&m),
+                          reader, content = m.content]() mutable {
+    std::expected<std::shared_ptr<const ClipAudio>, std::string> audio =
+        std::unexpected("couldn't read the clip's audio");
+    try {
+      // Renders are at most stereo.
+      const auto channels = std::min(2, int(reader->numChannels));
+      const auto length = int(reader->lengthInSamples);
+      juce::AudioBuffer<float> buffer(channels, length);
+      constexpr int chunk = 1 << 16;
+      bool read = true;
+      for (int pos = 0; read && pos < length; pos += chunk)
+        read = reader->read(&buffer, pos, std::min(chunk, length - pos), pos, true, channels > 1);
+      if (read) {
+        auto clip = std::make_shared<ClipAudio>();
+        for (int c = 0; c < channels; ++c)
+          clip->channels.emplace_back(buffer.getReadPointer(c),
+                                      buffer.getReadPointer(c) + length);
+        audio = std::move(clip);
+      }
+    } catch (const std::exception &e) {
+      audio = std::unexpected(e.what());
+    }
+
+    // The reader listens to the audio source, so it's released on the
+    // message thread.
+    post(self, [=, reader = std::move(reader)](SamplebrainDocumentController &dc) mutable {
+      reader.reset();
+      auto *m = mod.get();
+      if (!m || m->content != content) return;
+      if (audio) m->audio = *audio;
+      else m->audio = ReadFailed{audio.error()};
+      dc.changed();
+    });
+  });
 }
 
 void SamplebrainDocumentController::start_render(SamplebrainAudioModification &m,
@@ -438,44 +483,23 @@ void SamplebrainDocumentController::start_render(SamplebrainAudioModification &m
   auto progress = new_job();
   m.started(inputs, progress);
   const std::uint64_t generation = ++*m.generation;
-  auto reader = std::make_shared<juce::ARAAudioSourceReader>(m.getAudioSource());
   changed();
 
   engine_->pool().addJob([engine = engine_, self = juce::WeakReference(this),
-                          mod = juce::WeakReference(&m), reader, brain = inputs.brain,
-                          target_settings = inputs.target, render = inputs.render,
-                          rate = inputs.rate, progress, generation,
-                          current = m.generation]() mutable {
+                          mod = juce::WeakReference(&m), inputs, progress, generation] {
     ProgressScope scope(progress.get());
     std::expected<std::shared_ptr<const RenderCache>, std::string> result =
         std::unexpected("cancelled");
     try {
-      progress->report("reading clip");
-      const auto channels = std::min(2, int(reader->numChannels));
-      const auto length = int(reader->lengthInSamples);
-      juce::AudioBuffer<float> buffer(channels, length);
-      constexpr int chunk = 1 << 16;
-      for (int pos = 0; pos < length; pos += chunk) {
-        if (*current != generation) throw Cancelled{};
-        const int n = std::min(chunk, length - pos);
-        if (!reader->read(&buffer, pos, n, pos, true, channels > 1))
-          throw std::runtime_error("couldn't read the clip's audio");
-      }
-      ClipAudio clip;
-      for (int c = 0; c < channels; ++c)
-        clip.channels.emplace_back(buffer.getReadPointer(c), buffer.getReadPointer(c) + length);
-      const auto target = engine->target(clip, target_settings, rate);
+      const auto target = engine->target(*inputs.audio, inputs.target, inputs.rate);
       if (!target) throw std::runtime_error(target.error());
-      result = engine->render(brain, *target, render);
+      result = engine->render(inputs.brain, *target, inputs.render);
     } catch (const Cancelled &) {
     } catch (const std::exception &e) {
       result = std::unexpected(e.what());
     }
 
-    // The reader listens to the audio source, so it's released on the
-    // message thread.
-    post(self, [=, reader = std::move(reader)](SamplebrainDocumentController &dc) mutable {
-      reader.reset();
+    post(self, [=](SamplebrainDocumentController &dc) {
       auto *m = mod.get();
       if (!m || *m->generation != generation) return;
       if (result) {
@@ -548,7 +572,11 @@ juce::ARAPlaybackRenderer *SamplebrainDocumentController::doCreatePlaybackRender
 }
 
 void SamplebrainDocumentController::didEnableAudioSourceSamplesAccess(
-    juce::ARAAudioSource *, bool) {
+    juce::ARAAudioSource *source, bool enable) {
+  // A read that failed because access went away can try again.
+  if (enable)
+    for (auto *m : source->getAudioModifications<SamplebrainAudioModification>())
+      if (std::holds_alternative<ReadFailed>(m->audio)) m->audio = Unread{};
   changed();
 }
 
@@ -560,7 +588,10 @@ void SamplebrainDocumentController::doUpdateMusicalContextContent(
 void SamplebrainDocumentController::doUpdateAudioSourceContent(
     juce::ARAAudioSource *source, juce::ARAContentUpdateScopes scopes) {
   if (!scopes.affectSamples()) return;
-  for (auto *m : source->getAudioModifications<SamplebrainAudioModification>()) ++m->content;
+  for (auto *m : source->getAudioModifications<SamplebrainAudioModification>()) {
+    ++m->content;
+    m->audio = Unread{};
+  }
   changed();
 }
 

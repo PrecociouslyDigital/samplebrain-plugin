@@ -18,9 +18,9 @@ class SamplebrainDocumentController;
 struct Idle {};
 struct Waiting {
   std::string reason;
-  // Whether it's waiting for its brain to load or build, rather than for
-  // the user.
-  bool for_brain = false;
+  // Whether it's waiting on work under way, like reading the clip or
+  // building its brain, rather than on the user.
+  bool busy = false;
 };
 struct Rendering {
   std::shared_ptr<JobProgress> progress;
@@ -38,9 +38,19 @@ struct RenderInputs {
   TargetSettings target;
   RenderSettings render;
   unsigned rate;
-  std::uint64_t content;
+  std::shared_ptr<const ClipAudio> audio;
   bool operator==(const RenderInputs &) const = default;
 };
+
+struct Unread {};
+struct ReadingAudio {};
+struct ReadFailed {
+  std::string message;
+};
+// A clip's audio, read as soon as the host shares it: hosts can revoke
+// access at any time, so renders use this copy.
+using ClipAudioState =
+    std::variant<Unread, ReadingAudio, ReadFailed, std::shared_ptr<const ClipAudio>>;
 
 // One clip: its settings, its render's status, and the render being played.
 class SamplebrainAudioModification : public juce::ARAAudioModification {
@@ -51,7 +61,8 @@ public:
 
   ClipSettings settings;
   Published<RenderCache> render;
-  // Bumped when the host changes the clip's audio.
+  ClipAudioState audio;
+  // Bumped when the host changes the clip's audio, so older reads can tell.
   std::uint64_t content = 0;
 
   // Bumped for every new render, so older ones can tell they're stale.
@@ -193,6 +204,7 @@ private:
   // finishes, then hands its result to apply unless it threw.
   template <class Work, class Apply> void load(BrainState &, Work, Apply);
   std::variant<Waiting, RenderInputs> wanted(SamplebrainAudioModification &);
+  void read_audio(SamplebrainAudioModification &);
   void start_render(SamplebrainAudioModification &, const RenderInputs &);
   // Call after every change: the editor redraws, and each clip works out
   // what it should play.
