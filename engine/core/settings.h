@@ -94,6 +94,11 @@ inline constexpr std::string_view algorithm_labels[] = {
 #define SB_FIELD(name, label, kind)                                            \
   decltype(kind)::value_type name = (kind).default_value;
 
+// operator== asks whether a setting was changed, so exact float comparison
+// is intended.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wfloat-equal"
+
 struct BrainSettings {
   SB_BRAIN_SETTINGS(SB_FIELD)
   bool operator==(const BrainSettings &) const = default;
@@ -111,6 +116,8 @@ struct RenderSettings {
   std::vector<bool> sound_enabled;
   bool operator==(const RenderSettings &) const = default;
 };
+
+#pragma clang diagnostic pop
 
 #undef SB_FIELD
 

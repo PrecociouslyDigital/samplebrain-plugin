@@ -31,6 +31,17 @@ struct Failed {
 };
 using RenderStatus = std::variant<Idle, Waiting, Rendering, Ready, Failed>;
 
+// Everything a clip's render depends on. A clip renders again when these
+// differ from its last render's.
+struct RenderInputs {
+  LoadedBrain brain;
+  TargetSettings target;
+  RenderSettings render;
+  unsigned rate;
+  std::uint64_t content;
+  bool operator==(const RenderInputs &) const = default;
+};
+
 // One clip: its settings, its render's status, and the render being played.
 class SamplebrainAudioModification : public juce::ARAAudioModification {
 public:
@@ -40,25 +51,44 @@ public:
 
   ClipSettings settings;
   Published<RenderCache> render;
+  // Bumped when the host changes the clip's audio.
+  std::uint64_t content = 0;
 
   // Bumped for every new render, so older ones can tell they're stale.
   std::shared_ptr<std::atomic<std::uint64_t>> generation =
       std::make_shared<std::atomic<std::uint64_t>>(0);
 
-  const RenderStatus &status() const { return status_; }
-  void set_status(RenderStatus);
-  // When the next render should start. Set by edits, after a short pause.
-  const std::optional<juce::Time> &render_due() const { return render_due_; }
-  void set_render_due(std::optional<juce::Time>);
+  // Message thread. The controller states what the clip should play: either
+  // waiting on something, or these inputs, which schedule a render unless
+  // the last render already used them.
+  void want(const std::variant<Waiting, RenderInputs> &, juce::Time now);
+  bool scheduled() const { return std::holds_alternative<Scheduled>(plan_); }
+  // The scheduled render's inputs, once it's due.
+  std::optional<RenderInputs> due(juce::Time now) const;
+  void started(const RenderInputs &, std::shared_ptr<JobProgress>);
+  void finished(std::variant<Ready, Failed>);
+
+  RenderStatus status() const;
   // Whether a render is due, running, or waiting on its brain. Offline
   // renders wait for this to clear.
   bool pending() const noexcept { return pending_.load(); }
 
 private:
+  struct Settled {};
+  struct Scheduled {
+    RenderInputs inputs;
+    juce::Time due;
+  };
+  struct Render {
+    RenderInputs inputs;
+    std::variant<Rendering, Ready, Failed> outcome;
+  };
+
   void update_pending();
 
-  RenderStatus status_ = Idle{};
-  std::optional<juce::Time> render_due_;
+  // While settled or scheduled, the clip shows how its last render went.
+  std::variant<Settled, Waiting, Scheduled> plan_;
+  std::optional<Render> last_;
   std::atomic<bool> pending_ = false;
 
   JUCE_DECLARE_WEAK_REFERENCEABLE(SamplebrainAudioModification)
@@ -156,10 +186,11 @@ private:
   // Runs work on the pool, counting as one of the brain's loads until it
   // finishes, then hands its result to apply unless it threw.
   template <class Work, class Apply> void load(BrainState &, Work, Apply);
-  void schedule_render(SamplebrainAudioModification &, juce::RelativeTime delay = {});
-  void start_render(SamplebrainAudioModification &);
-  void render_brain_clips(const juce::String &brain_id);
-  void changed() { ++version_; }
+  std::variant<Waiting, RenderInputs> wanted(SamplebrainAudioModification &);
+  void start_render(SamplebrainAudioModification &, const RenderInputs &);
+  // Call after every change: the editor redraws, and each clip works out
+  // what it should play.
+  void changed();
 #ifdef SB_TEST_HOOKS
   void add_test_brain();
 #endif

@@ -11,8 +11,9 @@ namespace sb::plugin {
 namespace {
 
 constexpr int timer_ms = 50;
-// Rendering waits this long after a settings change, so dragging a slider
-// doesn't start a render for every step.
+// Re-rendering waits this long after a change, so dragging a slider doesn't
+// start a render for every step. A clip's first render skips the wait:
+// REAPER takes back sample access about half a second after creating it.
 const juce::RelativeTime render_pause = juce::RelativeTime::milliseconds(300);
 
 // Runs on the message thread if the target is still alive.
@@ -34,19 +35,49 @@ SamplebrainAudioModification::SamplebrainAudioModification(
     settings = original->settings;
 }
 
-void SamplebrainAudioModification::set_status(RenderStatus status) {
-  status_ = std::move(status);
+void SamplebrainAudioModification::want(const std::variant<Waiting, RenderInputs> &want,
+                                        juce::Time now) {
+  if (const auto *waiting = std::get_if<Waiting>(&want)) {
+    plan_ = *waiting;
+  } else {
+    const auto &inputs = std::get<RenderInputs>(want);
+    const auto *scheduled = std::get_if<Scheduled>(&plan_);
+    if (last_ && last_->inputs == inputs) plan_ = Settled{};
+    else if (!scheduled || scheduled->inputs != inputs)
+      plan_ = Scheduled{inputs, last_ ? now + render_pause : now};
+  }
   update_pending();
 }
 
-void SamplebrainAudioModification::set_render_due(std::optional<juce::Time> due) {
-  render_due_ = due;
+std::optional<RenderInputs> SamplebrainAudioModification::due(juce::Time now) const {
+  const auto *scheduled = std::get_if<Scheduled>(&plan_);
+  if (!scheduled || scheduled->due > now) return std::nullopt;
+  return scheduled->inputs;
+}
+
+void SamplebrainAudioModification::started(const RenderInputs &inputs,
+                                           std::shared_ptr<JobProgress> progress) {
+  if (last_)
+    if (auto *r = std::get_if<Rendering>(&last_->outcome)) r->progress->cancel();
+  last_ = Render{inputs, Rendering{std::move(progress)}};
+  plan_ = Settled{};
   update_pending();
+}
+
+void SamplebrainAudioModification::finished(std::variant<Ready, Failed> outcome) {
+  std::visit([&](auto o) { last_->outcome = std::move(o); }, std::move(outcome));
+  update_pending();
+}
+
+RenderStatus SamplebrainAudioModification::status() const {
+  if (const auto *waiting = std::get_if<Waiting>(&plan_)) return *waiting;
+  if (!last_) return Idle{};
+  return std::visit([](const auto &o) -> RenderStatus { return o; }, last_->outcome);
 }
 
 void SamplebrainAudioModification::update_pending() {
-  const auto *waiting = std::get_if<Waiting>(&status_);
-  pending_ = render_due_.has_value() || std::holds_alternative<Rendering>(status_) ||
+  const auto *waiting = std::get_if<Waiting>(&plan_);
+  pending_ = scheduled() || std::holds_alternative<Rendering>(status()) ||
              (waiting && waiting->for_brain);
 }
 
@@ -91,9 +122,11 @@ SamplebrainDocumentController::get(ARA::PlugIn::DocumentController *dc) {
 std::vector<SamplebrainAudioModification *>
 SamplebrainDocumentController::modifications() {
   std::vector<SamplebrainAudioModification *> all;
-  for (auto *source : getDocumentController()
-                          ->getDocument<juce::ARADocument>()
-                          ->getAudioSources<juce::ARAAudioSource>())
+  // The host can destroy the document while job callbacks and the timer
+  // still run.
+  auto *document = getDocumentController()->getDocument<juce::ARADocument>();
+  if (!document) return all;
+  for (auto *source : document->getAudioSources<juce::ARAAudioSource>())
     for (auto *m : source->getAudioModifications<SamplebrainAudioModification>())
       all.push_back(m);
   return all;
@@ -140,9 +173,6 @@ void SamplebrainDocumentController::edit_brain(
 void SamplebrainDocumentController::brain_changed(BrainState &brain) {
   ++brain.revision;
   refresh_keys(brain);
-  // Clips keep playing the old brain until a new one is built, but which of
-  // its samples are switched on can change straight away.
-  render_brain_clips(brain.definition.id);
   changed();
 }
 
@@ -160,8 +190,7 @@ void SamplebrainDocumentController::load(BrainState &brain, Work work, Apply app
           BrainState *b = dc.find_brain(id);
           if (!b) return;
           --b->loading;
-          if (result) apply(dc, *b, *result);
-          if (!b->busy()) dc.render_brain_clips(id);
+          if (result) apply(*b, *result);
           dc.changed();
         });
       });
@@ -199,15 +228,12 @@ void SamplebrainDocumentController::refresh_keys(BrainState &brain) {
           }
           return found;
         },
-        [revision = brain.revision, rate](SamplebrainDocumentController &dc, BrainState &b,
-                                          const KeyLookup &found) {
+        [revision = brain.revision, rate](BrainState &b, const KeyLookup &found) {
           if (b.revision != revision) return;
           b.error = found.error;
           if (found.sounds) b.current.insert_or_assign(rate, *found.sounds);
-          if (found.built) {
+          if (found.built)
             b.playing.insert_or_assign(rate, PlayingBrain{*found.built, b.definition.paths()});
-            dc.render_brain_clips(b.definition.id);
-          }
         });
 }
 
@@ -259,7 +285,6 @@ void SamplebrainDocumentController::build_brain(const juce::String &id) {
         b->playing.insert_or_assign(rate, PlayingBrain{brain, paths});
         if (b->revision == revision) b->current.insert_or_assign(rate, sounds.at(rate));
       }
-      dc.render_brain_clips(definition.id);
       dc.changed();
     });
   });
@@ -324,62 +349,49 @@ void SamplebrainDocumentController::edit_clip(
   edit(m.settings);
   if (m.settings.brain_id != old_brain)
     if (BrainState *brain = find_brain(m.settings.brain_id)) refresh_keys(*brain);
-  schedule_render(m, render_pause);
   changed();
 }
 
-void SamplebrainDocumentController::render_brain_clips(const juce::String &brain_id) {
-  for (auto *m : modifications())
-    if (m->settings.brain_id == brain_id) schedule_render(*m, render_pause);
-}
-
-void SamplebrainDocumentController::schedule_render(SamplebrainAudioModification &m,
-                                                    juce::RelativeTime delay) {
-  m.set_render_due(juce::Time::getCurrentTime() + delay);
-  if (!isTimerRunning()) startTimer(timer_ms);
-}
-
-void SamplebrainDocumentController::start_render(SamplebrainAudioModification &m) {
-  if (auto *r = std::get_if<Rendering>(&m.status())) r->progress->cancel();
-
-  // The status changes once, straight from one state to the next, so an
-  // offline render waiting on pending() never sees it drop in between.
-  auto *source = m.getAudioSource();
-  BrainState *brain = find_brain(m.settings.brain_id);
-  const auto rate = unsigned(source->getSampleRate());
-  const PlayingBrain *playing = nullptr;
-  if (brain)
-    if (auto it = brain->playing.find(rate); it != brain->playing.end()) playing = &it->second;
-
-  std::optional<Waiting> waiting;
-  if (!source->isSampleAccessEnabled())
-    waiting = Waiting{"waiting for the host to share the clip's audio"};
-  else if (!brain)
-    waiting = Waiting{"choose a brain"};
-  else if (!playing && brain->busy())
-    waiting = Waiting{"waiting for the brain", true};
-  else if (!playing)
-    waiting = Waiting{"build the brain"};
-  if (waiting) {
-    m.set_status(*waiting);
-    m.set_render_due(std::nullopt);
-    changed();
-    return;
+void SamplebrainDocumentController::changed() {
+  ++version_;
+  const auto now = juce::Time::getCurrentTime();
+  bool scheduled = false;
+  for (auto *m : modifications()) {
+    m->want(wanted(*m), now);
+    scheduled |= m->scheduled();
   }
+  if (scheduled && !isTimerRunning()) startTimer(timer_ms);
+}
+
+std::variant<Waiting, RenderInputs>
+SamplebrainDocumentController::wanted(SamplebrainAudioModification &m) {
+  auto *source = m.getAudioSource();
+  if (!source->isSampleAccessEnabled())
+    return Waiting{"waiting for the host to share the clip's audio"};
+  BrainState *brain = find_brain(m.settings.brain_id);
+  if (!brain) return Waiting{"choose a brain"};
+  const auto rate = unsigned(source->getSampleRate());
+  auto playing = brain->playing.find(rate);
+  if (playing == brain->playing.end())
+    return brain->busy() ? Waiting{"waiting for the brain", true} : Waiting{"build the brain"};
 
   RenderSettings render = m.settings.render;
-  render.sound_enabled = brain->sound_enabled(*playing);
+  render.sound_enabled = brain->sound_enabled(playing->second);
+  return RenderInputs{playing->second.brain, m.settings.target, render, rate, m.content};
+}
+
+void SamplebrainDocumentController::start_render(SamplebrainAudioModification &m,
+                                                 const RenderInputs &inputs) {
   auto progress = new_job();
-  m.set_status(Rendering{progress});
-  m.set_render_due(std::nullopt);
+  m.started(inputs, progress);
   const std::uint64_t generation = ++*m.generation;
-  auto reader = std::make_shared<juce::ARAAudioSourceReader>(source);
+  auto reader = std::make_shared<juce::ARAAudioSourceReader>(m.getAudioSource());
   changed();
 
   engine_->pool().addJob([engine = engine_, self = juce::WeakReference(this),
-                          mod = juce::WeakReference(&m), reader,
-                          brain = playing->brain, target_settings = m.settings.target,
-                          render, rate, progress, generation,
+                          mod = juce::WeakReference(&m), reader, brain = inputs.brain,
+                          target_settings = inputs.target, render = inputs.render,
+                          rate = inputs.rate, progress, generation,
                           current = m.generation]() mutable {
     ProgressScope scope(progress.get());
     std::expected<std::shared_ptr<const RenderCache>, std::string> result =
@@ -415,10 +427,10 @@ void SamplebrainDocumentController::start_render(SamplebrainAudioModification &m
       if (!m || *m->generation != generation) return;
       if (result) {
         m->render.publish(*result);
-        m->set_status(Ready{});
+        m->finished(Ready{});
         m->notifyContentChanged(juce::ARAContentUpdateScopes::samplesAreAffected(), true);
       } else if (result.error() != "cancelled") {
-        m->set_status(Failed{result.error()});
+        m->finished(Failed{result.error()});
       }
       dc.changed();
     });
@@ -430,8 +442,9 @@ void SamplebrainDocumentController::timerCallback() {
   bool waiting = false;
   for (auto *m : modifications()) {
     m->render.collect();
-    if (m->render_due() && *m->render_due() <= now && !editing_) start_render(*m);
-    waiting |= m->render_due().has_value() || m->render.has_retired();
+    if (!editing_)
+      if (auto inputs = m->due(now)) start_render(*m, *inputs);
+    waiting |= m->scheduled() || m->render.has_retired();
   }
   if (!waiting) stopTimer();
 }
@@ -451,8 +464,6 @@ void SamplebrainDocumentController::didEndEditing(juce::ARADocument *) {
 #ifdef SB_TEST_HOOKS
   if (brains_.empty()) add_test_brain();
 #endif
-  for (auto *m : modifications())
-    if (std::holds_alternative<Idle>(m->status()) && !m->render_due()) schedule_render(*m);
   changed();
 }
 
@@ -484,17 +495,15 @@ juce::ARAPlaybackRenderer *SamplebrainDocumentController::doCreatePlaybackRender
 }
 
 void SamplebrainDocumentController::didEnableAudioSourceSamplesAccess(
-    juce::ARAAudioSource *source, bool enable) {
-  if (!enable) return;
-  for (auto *m : source->getAudioModifications<SamplebrainAudioModification>())
-    schedule_render(*m);
+    juce::ARAAudioSource *, bool) {
+  changed();
 }
 
 void SamplebrainDocumentController::doUpdateAudioSourceContent(
     juce::ARAAudioSource *source, juce::ARAContentUpdateScopes scopes) {
   if (!scopes.affectSamples()) return;
-  for (auto *m : source->getAudioModifications<SamplebrainAudioModification>())
-    schedule_render(*m);
+  for (auto *m : source->getAudioModifications<SamplebrainAudioModification>()) ++m->content;
+  changed();
 }
 
 // ---------------------------------------------------------------------------
@@ -560,11 +569,8 @@ bool SamplebrainDocumentController::doRestoreObjectsFromStream(
             for (const auto &path : *p) paths.push_back(path.toString());
           load(
               *brain, [engine = engine_, key = *key] { return engine->cached_brain(key); },
-              [rate, paths](SamplebrainDocumentController &dc, BrainState &b,
-                            const std::optional<LoadedBrain> &loaded) {
-                if (!loaded) return;
-                b.playing.try_emplace(rate, PlayingBrain{*loaded, paths});
-                dc.render_brain_clips(b.definition.id);
+              [rate, paths](BrainState &b, const std::optional<LoadedBrain> &loaded) {
+                if (loaded) b.playing.try_emplace(rate, PlayingBrain{*loaded, paths});
               });
         }
     }
@@ -575,7 +581,6 @@ bool SamplebrainDocumentController::doRestoreObjectsFromStream(
           entry.name.toString().toRawUTF8());
       if (!m) continue;
       m->settings = clip_from_var(entry.value);
-      schedule_render(*m);
     }
 
   for (auto &brain : brains_) refresh_keys(*brain);

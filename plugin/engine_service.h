@@ -35,6 +35,7 @@ struct LoadedSounds {
 struct LoadedBrain {
   BrainKey key;
   std::shared_ptr<const Brain> brain;
+  bool operator==(const LoadedBrain &other) const { return key == other.key; }
 };
 
 // A brain read from a .brain file, with its sounds saved as samples.
