@@ -1,0 +1,83 @@
+{
+  "nodes": {
+    "ara-sdk": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1667824305,
+        "narHash": "sha256-5pkp0ukCRrGTzaenzW4gCRZADg/ihNVbr334jJK6DgY=",
+        "ref": "refs/tags/releases/2.2.0",
+        "rev": "98be7094b16b16fecd84e71c771b49b482d7191c",
+        "revCount": 67,
+        "submodules": true,
+        "type": "git",
+        "url": "https://github.com/Celemony/ARA_SDK"
+      },
+      "original": {
+        "ref": "refs/tags/releases/2.2.0",
+        "submodules": true,
+        "type": "git",
+        "url": "https://github.com/Celemony/ARA_SDK"
+      }
+    },
+    "juce": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1793622024,
+        "narHash": "sha256-PmDJnp3eD235E18itXIlGqkGSifWaVoKo+lFVw/VWI8=",
+        "owner": "juce-framework",
+        "repo": "JUCE",
+        "rev": "dabd5ad13cd869cba41046947fffc8e5ce5cd662",
+        "type": "github"
+      },
+      "original": {
+        "owner": "juce-framework",
+        "ref": "8.0.17-security",
+        "repo": "JUCE",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1795371335,
+        "narHash": "sha256-oa2P5WZer1A4wuhatl92JyHHEjrrOdIyuvTuI5LUi9Q=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "619c39f6eac5d1ed6b8f073a9414baf7034b2356",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixpkgs-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "ara-sdk": "ara-sdk",
+        "juce": "juce",
+        "nixpkgs": "nixpkgs",
+        "samplebrain": "samplebrain"
+      }
+    },
+    "samplebrain": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1723468208,
+        "narHash": "sha256-jLkY07B43SNWlfSPdbM39sCEwUDvVgqcRxoxFoR4L4o=",
+        "ref": "refs/heads/production",
+        "rev": "30e290dcbd7d7c4ae84890a1f512b9568e4ee1e5",
+        "revCount": 216,
+        "type": "git",
+        "url": "https://gitlab.com/then-try-this/samplebrain"
+      },
+      "original": {
+        "rev": "30e290dcbd7d7c4ae84890a1f512b9568e4ee1e5",
+        "type": "git",
+        "url": "https://gitlab.com/then-try-this/samplebrain"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

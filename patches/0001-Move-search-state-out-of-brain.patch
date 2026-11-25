@@ -1,0 +1,648 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sydney <sydney@hyphen-emdash.com>
+Date: Tue, 24 Nov 2026 20:03:40 -0800
+Subject: [PATCH 1/6] Move search state out of brain
+
+A search used to change the brain it searched: block usage, the current
+block index, the current error and the jiggle all lived on the brain, and
+jiggle called the global rand(). Two renderers sharing a brain, as the
+left and right renderers do, stepped on each other.
+
+All of that now lives in a search_state that the renderer owns, seeded
+with its own std::mt19937. Which sounds are switched on moves there too,
+so turning a sound on or off no longer touches the brain. Searching takes
+a const brain&, and block::compare takes the other block's usage as an
+argument.
+
+The .brain format is unchanged. The fields that used to hold this state
+are still written, with their old defaults, and ignored on reading.
+
+search_synapses also stops writing a reduced synapse count back into the
+caller's search_params.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ brain/src/block.cpp      |  19 +++----
+ brain/src/block.h        |   7 +--
+ brain/src/brain.cpp      | 115 ++++++++++++++++++++-------------------
+ brain/src/brain.h        |  29 ++++------
+ brain/src/renderer.cpp   |  16 +++---
+ brain/src/renderer.h     |  14 +++--
+ brain/src/search_state.h |  46 ++++++++++++++++
+ 7 files changed, 141 insertions(+), 105 deletions(-)
+ create mode 100644 brain/src/search_state.h
+
+diff --git a/brain/src/block.cpp b/brain/src/block.cpp
+index 4286d32..1fb1a4e 100644
+--- a/brain/src/block.cpp
++++ b/brain/src/block.cpp
+@@ -74,8 +74,7 @@ block::block(u64 id, const string &filename, const sample &pcm, u32 rate, const
+   m_n_mfcc(MFCC_FILTERS),
+   m_block_size(pcm.get_length()),
+   m_rate(rate),
+-  m_orig_filename(filename),
+-  m_usage(0)
++  m_orig_filename(filename)
+ {
+   init_fft(m_pcm.get_length(),rate);
+   assert(m_mfcc_proc!=NULL);
+@@ -179,11 +178,11 @@ double block::_compare(const sample &fft_a, const sample &mfcc_a,
+                params.m_ratio);
+ }
+ 
+-double block::compare(const block &other, const search_params &params) const {
++double block::compare(const block &other, const search_params &params, float other_usage) const {
+   return blend(blend(_compare(m_fft, m_mfcc, other.m_fft, other.m_mfcc, params),
+                      _compare(m_n_fft, m_n_mfcc, other.m_n_fft, other.m_n_mfcc, params),
+                      params.m_n_ratio),
+-               other.m_usage, params.m_usage_importance);
++               other_usage, params.m_usage_importance);
+ }
+ 
+ // serialise in/out to file
+@@ -278,11 +277,11 @@ bool block::unit_test() {
+ 
+   search_params p(0,0,0,100,0);
+   block bb2(0,"test",data,44100,w);
+-  assert(bb.compare(bb2,p)==0);
++  assert(bb.compare(bb2,p,0)==0);
+   p.m_ratio=1;
+-  assert(bb.compare(bb2,p)==0);
++  assert(bb.compare(bb2,p,0)==0);
+   p.m_ratio=0.5;
+-  assert(bb.compare(bb2,p)==0);
++  assert(bb.compare(bb2,p,0)==0);
+ 
+   sample data2(200);
+   for (u32 i=0; i<data.get_length(); i++) {
+@@ -293,10 +292,10 @@ bool block::unit_test() {
+   {
+     block bb3(0,"test",data2,44100,w);
+     p.m_ratio=0.0;
+-    assert(bb.compare(bb3,p)!=0);
+-    assert(bb.compare(bb3,p)!=0);
++    assert(bb.compare(bb3,p,0)!=0);
++    assert(bb.compare(bb3,p,0)!=0);
+     p.m_ratio=0.5;
+-    assert(bb.compare(bb3,p)!=0);
++    assert(bb.compare(bb3,p,0)!=0);
+     cpy=bb3;
+   }
+ 
+diff --git a/brain/src/block.h b/brain/src/block.h
+index 3aae3a2..b9b14d7 100644
+--- a/brain/src/block.h
++++ b/brain/src/block.h
+@@ -35,8 +35,9 @@ namespace spiralcore {
+     block(u64 id, const std::string &filename, const sample &pcm, u32 rate, const window &w, bool ditchpcm=false);
+     block() {}
+ 
+-    // returns distance based on ratio of fft-mfcc values
+-    double compare(const block &other, const search_params &params) const;
++    // returns distance based on ratio of fft-mfcc values, pushed away
++    // from blocks that have been used recently
++    double compare(const block &other, const search_params &params, float other_usage) const;
+ 
+     static void init_fft(u32 block_size, u32 rate);
+     static bool unit_test();
+@@ -46,7 +47,6 @@ namespace spiralcore {
+ 
+     std::vector<u32> &get_synapse() { return m_synapse; }
+     const std::vector<u32> &get_synapse_const() const { return m_synapse; }
+-    float &get_usage() { return m_usage; }
+     float get_freq() const { return m_dominant_freq; }
+     float get_n_freq() const { return m_n_dominant_freq; }
+ 
+@@ -75,7 +75,6 @@ namespace spiralcore {
+     static Aquila::Mfcc *m_mfcc_proc;
+ 
+     std::vector<u32> m_synapse;
+-    float m_usage;
+ 
+     float m_dominant_freq;
+     float m_n_dominant_freq;
+diff --git a/brain/src/brain.cpp b/brain/src/brain.cpp
+index 73af15d..a103874 100644
+--- a/brain/src/brain.cpp
++++ b/brain/src/brain.cpp
+@@ -29,10 +29,7 @@ static const u32 NUM_FIXED_SYNAPSES = 1000;
+ static const double usage_factor = 1000;
+ 
+ brain::brain() :
+-  m_current_block_index(0),
+-  m_current_error(0),
+-  m_average_error(0),
+-  m_usage_falloff(0.9)
++  m_average_error(0)
+ {
+   status::update("brain ready...");
+ }
+@@ -85,14 +82,6 @@ void brain::delete_sound(std::string filename) {
+   recompute_sample_sections();
+ }
+ 
+-void brain::activate_sound(std::string filename, bool active) {
+-  for (auto i=m_samples.begin(); i!=m_samples.end(); ++i) {
+-    if (filename==i->m_filename) {
+-      i->m_enabled=active;
+-    }
+-  }
+-}
+-
+ void brain::clear() {
+   m_blocks.clear();
+   m_samples.clear();
+@@ -163,35 +152,36 @@ const block &brain::get_block(u32 index) const {
+ }
+ 
+ // helper to do the stickyness comparison and sort out current_block_index
+-u32 brain::stickify(const block &target, u32 closest_index, f32 dist, const search_params &params) {
+-  u32 next_index = m_current_block_index+1;
++u32 brain::stickify(const block &target, u32 closest_index, f32 dist, const search_params &params, search_state &state) const {
++  u32 next_index = state.m_current_block_index+1;
+ 
+   // if we have stickyness turned on and the next block exists
+   if (params.m_stickyness>0 && next_index<m_blocks.size()) {
+     // get next block
+-    f32 dist_to_next = target.compare(m_blocks[next_index],params);
++    f32 dist_to_next = target.compare(m_blocks[next_index],params,state.m_usage[next_index]);
+     if (dist_to_next * (1-params.m_stickyness) <
+ 	dist * params.m_stickyness) {
+       // use the next block rather than the closest
+-      m_current_block_index = next_index;
+-      return m_current_block_index;
++      state.m_current_block_index = next_index;
++      return state.m_current_block_index;
+     }
+   }
+   // use the closest block
+-  m_current_block_index = closest_index;
+-  return m_current_block_index;
++  state.m_current_block_index = closest_index;
++  return state.m_current_block_index;
+ }
+ 
+ // returns index to block
+-u32 brain::search(const block &target, const search_params &params) {
++u32 brain::search(const block &target, const search_params &params, search_state &state) const {
+   double closest = FLT_MAX;
+   u32 closest_index = 0;
++  u32 sound_index = 0;
+   // check each sample section
+   for (auto &s : m_samples) {
+-    if (s.m_enabled) { // are we turned on?
++    if (state.m_sound_enabled[sound_index++]) { // are we turned on?
+       // loop through indexes for this section
+       for (u32 i=s.m_start; i<s.m_end; ++i) {
+-	double diff = target.compare(m_blocks[i],params);
++	double diff = target.compare(m_blocks[i],params,state.m_usage[i]);
+ 	if (diff<closest) {
+ 	  closest=diff;
+ 	  closest_index = i;
+@@ -199,21 +189,22 @@ u32 brain::search(const block &target, const search_params &params) {
+       }
+     }
+   }
+-  deplete_usage();
+-  m_blocks[closest_index].get_usage()+=usage_factor;
+-  return stickify(target,closest_index,closest,params);
++  deplete_usage(state);
++  state.m_usage[closest_index]+=usage_factor;
++  return stickify(target,closest_index,closest,params,state);
+ }
+ 
+ // returns index to block
+-u32 brain::rev_search(const block &target, const search_params &params) {
++u32 brain::rev_search(const block &target, const search_params &params, search_state &state) const {
+   double furthest = 0;
+   u32 furthest_index = 0;
++  u32 sound_index = 0;
+   // check each sample section
+   for (auto &s : m_samples) {
+-    if (s.m_enabled) { // are we turned on?
++    if (state.m_sound_enabled[sound_index++]) { // are we turned on?
+       // loop through indexes for this section
+       for (u32 i=s.m_start; i<s.m_end; ++i) {
+-	double diff = target.compare(m_blocks[i],params);
++	double diff = target.compare(m_blocks[i],params,state.m_usage[i]);
+ 	if (diff>furthest) {
+ 	  furthest=diff;
+ 	  furthest_index = i;
+@@ -221,9 +212,9 @@ u32 brain::rev_search(const block &target, const search_params &params) {
+       }
+     }
+   }
+-  deplete_usage();
+-  m_blocks[furthest_index].get_usage()+=usage_factor;
+-  m_current_block_index = furthest_index;
++  deplete_usage(state);
++  state.m_usage[furthest_index]+=usage_factor;
++  state.m_current_block_index = furthest_index;
+ 
+   return furthest_index;
+ }
+@@ -289,7 +280,7 @@ void brain::build_synapses_fixed(search_params &params) {
+     for (auto &j:m_blocks) {
+       assert(index<m_blocks.size());
+       if (index!=outer_index) {
+-	double diff = i.compare(j,params);
++	double diff = i.compare(j,params,0);
+ 	collect.push_back(pair<u32,double>(index,diff));
+       }
+       ++index;
+@@ -314,32 +305,35 @@ void brain::build_synapses_fixed(search_params &params) {
+ }
+ 
+ // randomise the current block
+-void brain::jiggle() {
++void brain::jiggle(search_state &state) const {
+   if (m_blocks.size()>0) {
+-    m_current_block_index=rand()%m_blocks.size();
++    state.m_current_block_index=state.m_rng()%m_blocks.size();
+   } else {
+-    m_current_block_index=0;
++    state.m_current_block_index=0;
+   }
+ }
+ 
+-bool brain::is_block_active(u32 index) {
++bool brain::is_block_active(u32 index, const search_state &state) const {
++  u32 sound_index = 0;
+   // check each sample section
+   for (auto &s:m_samples) {
+-    if (index>=s.m_start && index<s.m_end && s.m_enabled) {
++    if (index>=s.m_start && index<s.m_end && state.m_sound_enabled[sound_index]) {
+       return true;
+     }
++    ++sound_index;
+   }
+   return false;
+ }
+ 
+-u32 brain::search_synapses(const block &target, search_params &params) {
+-  const block &current = get_block(m_current_block_index);
++u32 brain::search_synapses(const block &target, const search_params &params, search_state &state) const {
++  const block &current = get_block(state.m_current_block_index);
+   double closest = DBL_MAX;
+   u32 closest_index = 0;
+ 
+   // find nearest in synaptic connections
+-  if (current.get_synapse_const().size()<params.m_num_synapses) {
+-    params.m_num_synapses = current.get_synapse_const().size()-1;
++  u32 num_synapses = params.m_num_synapses;
++  if (current.get_synapse_const().size()<num_synapses) {
++    num_synapses = current.get_synapse_const().size()-1;
+   }
+   //    assert(current.get_synapse_const().size()>params.m_num_synapses);
+ 
+@@ -348,12 +342,12 @@ u32 brain::search_synapses(const block &target, search_params &params) {
+   // only makes sense when ordered by closeness in fixed mode
+   vector<u32>::const_iterator i=current.get_synapse_const().begin();
+   while (i!=current.get_synapse_const().end() &&
+-	 synapse_count<params.m_num_synapses) {
++	 synapse_count<num_synapses) {
+     //assert(*i<m_blocks.size());
+ 
+-    if (is_block_active(*i)) {
++    if (is_block_active(*i,state)) {
+       const block &other = get_block(*i);
+-      double diff = target.compare(other,params);
++      double diff = target.compare(other,params,state.m_usage[*i]);
+       if (diff<closest) {
+ 	closest=diff;
+ 	closest_index = *i;
+@@ -363,21 +357,21 @@ u32 brain::search_synapses(const block &target, search_params &params) {
+     ++synapse_count;
+   }
+ 
+-  deplete_usage();
+-  m_blocks[m_current_block_index].get_usage()+=usage_factor;
+-  m_current_error = closest;
++  deplete_usage(state);
++  state.m_usage[state.m_current_block_index]+=usage_factor;
++  state.m_current_error = closest;
+ 
+   // probably impossible to be false?
+   if (closest_index!=0) {
+     //cerr<<"usage:"<<m_blocks[closest_index].get_usage()<<endl;
+-    return stickify(target,closest_index,closest,params);
++    return stickify(target,closest_index,closest,params,state);
+   }
+-  return m_current_block_index;
++  return state.m_current_block_index;
+ }
+ 
+-void brain::deplete_usage() {
+-  for (vector<block>::iterator i=m_blocks.begin(); i!=m_blocks.end(); ++i) {
+-    i->get_usage()*=m_usage_falloff;
++void brain::deplete_usage(search_state &state) const {
++  for (float &usage : state.m_usage) {
++    usage*=state.m_usage_falloff;
+   }
+ }
+ 
+@@ -385,9 +379,11 @@ ios &spiralcore::operator||(ios &s, brain::sound &b) {
+   u32 version=1;
+   string id("brain::sound");
+   s||id||version;
++  // which sounds are enabled is part of the search state now
++  bool enabled=true;
+   s||b.m_filename||b.m_sample;
+   if (version>0) {
+-    s||b.m_num_blocks||b.m_start||b.m_end||b.m_enabled;
++    s||b.m_num_blocks||b.m_start||b.m_end||enabled;
+   }
+   return s;
+ }
+@@ -400,8 +396,12 @@ ios &spiralcore::operator||(ios &s, brain &b) {
+   stream_vector(s,b.m_blocks);
+   stream_list(s,b.m_samples);
+   s||b.m_block_size||b.m_overlap||b.m_window;
+-  s||b.m_current_block_index||b.m_current_error||
+-    b.m_average_error||b.m_usage_falloff;
++  // the search state used to be saved here too
++  u32 current_block_index=0;
++  double current_error=0;
++  float usage_falloff=0.9;
++  s||current_block_index||current_error||
++    b.m_average_error||usage_falloff;
+   return s;
+ }
+ 
+@@ -434,8 +434,9 @@ bool brain::unit_test() {
+   b3.init(512, 0, window::BLACKMAN);
+ 
+   search_params p(1,0,0,100,0);
++  search_state state(b3.get_num_blocks(),{true},0.9,0);
+ 
+-  assert(b3.search(b2.m_blocks[0],p)==0);
++  assert(b3.search(b2.m_blocks[0],p,state)==0);
+   //assert(b3.search(b2.m_blocks[9],p)==9);
+   //assert(b3.search(b2.m_blocks[19],p)==19);
+   //assert(b3.search(b2.m_blocks[29],p)==29);
+@@ -453,7 +454,7 @@ bool brain::unit_test() {
+   assert(b3.m_samples.size()==b4.m_samples.size());
+   assert(b3.m_blocks.size()==b4.m_blocks.size());
+ 
+-  assert(b4.search(b2.m_blocks[0],p)==0);
++  assert(b4.search(b2.m_blocks[0],p,state)==0);
+   //assert(b4.search(b2.m_blocks[9],p)==9);
+   //assert(b4.search(b2.m_blocks[19],p)==19);
+   //assert(b4.search(b2.m_blocks[29],p)==29);
+diff --git a/brain/src/brain.h b/brain/src/brain.h
+index 6b11bfa..6cb08c5 100644
+--- a/brain/src/brain.h
++++ b/brain/src/brain.h
+@@ -22,6 +22,7 @@
+ #include "block_source.h"
+ #include "block.h"
+ #include "search_params.h"
++#include "search_state.h"
+ #include "window.h"
+ 
+ #ifndef BRAIN
+@@ -45,8 +46,6 @@ public:
+     void load_sound(std::string filename, stereo_mode mode);
+     void delete_sound(std::string filename);
+     void clear_sounds() { m_samples.clear(); }
+-    // turns on/off a sound in realtime without reprocessing
+-    void activate_sound(std::string filename, bool active);
+ 
+     const sample &get_block_pcm(u32 index) const;
+     const sample &get_block_n_pcm(u32 index) const;
+@@ -54,21 +53,17 @@ public:
+     virtual const block &get_block(u32 index) const;
+     virtual u32 get_num_blocks() const { return m_blocks.size(); }
+ 
+-    void set_usage_falloff(float s) { m_usage_falloff=s; }
+-    float get_usage_falloff() { return m_usage_falloff; }
+-
+     // basic search
+-    u32 search(const block &target, const search_params &params);
+-    u32 rev_search(const block &target, const search_params &params);
++    u32 search(const block &target, const search_params &params, search_state &state) const;
++    u32 rev_search(const block &target, const search_params &params, search_state &state) const;
+ 
+     // synaptic search
+     // double calc_average_diff(search_params &params);
+     // void build_synapses_thresh(search_params &params, double threshold);
+     void build_synapses_fixed(search_params &params);
+-    u32 search_synapses(const block &target, search_params &params);
+-    double get_current_error() { return m_current_error; }
++    u32 search_synapses(const block &target, const search_params &params, search_state &state) const;
+     // randomise the synaptic pointer
+-    void jiggle();
++    void jiggle(search_state &state) const;
+ 
+     static bool unit_test();
+ 
+@@ -76,13 +71,12 @@ public:
+     public:
+         sound(const std::string &name, const sample &sample) :
+             m_filename(name), m_sample(sample), m_num_blocks(0),
+-            m_enabled(true), m_start(0), m_end(0) {}
++            m_start(0), m_end(0) {}
+         sound() {}; // needed for streaming
+         std::string m_filename;
+         sample m_sample;
+         // filled in during chop_and_add
+         u32 m_num_blocks;
+-        bool m_enabled;
+         // we store the blocks separately in a flat list, so we can
+         // directly index them, but we need to filter them by source
+         // sound - so we need to be able to turn large contiguous sets
+@@ -91,16 +85,16 @@ public:
+         u32 m_start,m_end;
+     };
+ 
+-    const std::list<sound> &get_samples() { return m_samples; }
++    const std::list<sound> &get_samples() const { return m_samples; }
+ 
+ private:
+ 
+     void chop_and_add(sound &s, u32 count, bool ditchpcm=false);
+-    void deplete_usage();
+-    u32 stickify(const block &target, u32 closest_index, f32 dist, const search_params &params);
++    void deplete_usage(search_state &state) const;
++    u32 stickify(const block &target, u32 closest_index, f32 dist, const search_params &params, search_state &state) const;
+     void recompute_sample_sections();
+     // checks sample sections
+-    bool is_block_active(u32 index);
++    bool is_block_active(u32 index, const search_state &state) const;
+ 
+     vector<block> m_blocks;
+     std::list<sound> m_samples;
+@@ -108,10 +102,7 @@ private:
+ 
+     window m_window;
+ 
+-    u32 m_current_block_index;
+-    double m_current_error;
+     double m_average_error;
+-    float m_usage_falloff;
+ 
+     friend ios &operator||(ios &s, brain &b);
+     friend ios &operator||(ios &s, sound &b);
+diff --git a/brain/src/renderer.cpp b/brain/src/renderer.cpp
+index aef863c..c7cb8f6 100644
+--- a/brain/src/renderer.cpp
++++ b/brain/src/renderer.cpp
+@@ -20,11 +20,9 @@
+ using namespace spiralcore;
+ using namespace std;
+ 
+-void renderer::init(brain &source, brain &target) {
++void renderer::init() {
+   m_volume=1;
+   m_playing=false;
+-  m_source=source;
+-  m_target=target;
+   m_target_time=0;
+   m_render_time=0;
+   m_n_mix=0;
+@@ -47,7 +45,7 @@ void renderer::reset() {
+   m_target_index=0;
+   m_render_index=0;
+   m_render_blocks.clear();
+-  m_source.jiggle();
++  m_source.jiggle(m_state);
+ }
+ 
+ 
+@@ -128,14 +126,14 @@ bool renderer::find_render_blocks(const block_source &target, u32 nframes) {
+     // which algo are we using today?
+     switch (m_search_algo) {
+     case BASIC:
+-      src_index = m_source.search(target.get_block(m_target_index), m_search_params);
++      src_index = m_source.search(target.get_block(m_target_index), m_search_params, m_state);
+       break;
+     case REV_BASIC:
+-      src_index = m_source.rev_search(target.get_block(m_target_index), m_search_params);
++      src_index = m_source.rev_search(target.get_block(m_target_index), m_search_params, m_state);
+       break;
+     case SYNAPTIC:
+     case SYNAPTIC_SLIDE:
+-      src_index = m_source.search_synapses(target.get_block(m_target_index), m_search_params);
++      src_index = m_source.search_synapses(target.get_block(m_target_index), m_search_params, m_state);
+       break;
+     }
+ 
+@@ -144,7 +142,7 @@ bool renderer::find_render_blocks(const block_source &target, u32 nframes) {
+ 
+       // synaptic slide blocks progression of the target until
+       // a good enough source block is found
+-      if (m_source.get_current_error()<m_slide_error &&
++      if (m_state.m_current_error<m_slide_error &&
+           m_render_index%m_stretch==0) {
+         m_target_index++;
+         m_target_time+=tgt_shift;
+@@ -288,7 +286,7 @@ bool renderer::unit_test() {
+   target.load_sound("test_data/up.wav", brain::MIX);
+   target.init(10,0,window::RECTANGLE);
+ 
+-  renderer rr(source,target);
++  renderer rr(source,target,search_state(source.get_num_blocks(),{true},0.9,0));
+   rr.set_playing(true);
+   float *buf=new float[400];
+   rr.process(10,buf);
+diff --git a/brain/src/renderer.h b/brain/src/renderer.h
+index 897fd02..01c6103 100644
+--- a/brain/src/renderer.h
++++ b/brain/src/renderer.h
+@@ -26,11 +26,12 @@ namespace spiralcore {
+ 
+   class renderer {
+   public:
+-  renderer(brain &source, brain &target) :
++  renderer(const brain &source, const brain &target, search_state state) :
+     m_source(source),
+     m_target(target),
++    m_state(std::move(state)),
+     m_search_params(0,0,0,100,0)
+-    { init(source,target); }
++    { init(); }
+ 
+     enum search_algo {
+       BASIC = 0,
+@@ -39,7 +40,7 @@ namespace spiralcore {
+       SYNAPTIC_SLIDE
+     };
+ 
+-    void init(brain &source, brain &target);
++    void init();
+ 
+     void reset();
+ 
+@@ -64,7 +65,7 @@ namespace spiralcore {
+     u32 get_stretch() { return m_stretch; }
+     float get_autotune() { return m_autotune; }
+ 
+-    brain &get_source() { return m_source; }
++    const brain &get_source() const { return m_source; }
+ 
+     static bool unit_test();
+ 
+@@ -93,8 +94,9 @@ namespace spiralcore {
+       float m_position; // in samples
+     };
+ 
+-    brain &m_source;
+-    brain &m_target;
++    const brain &m_source;
++    const brain &m_target;
++    search_state m_state;
+ 
+     search_params m_search_params;
+     float m_volume;
+diff --git a/brain/src/search_state.h b/brain/src/search_state.h
+new file mode 100644
+index 0000000..8b00074
+--- /dev/null
++++ b/brain/src/search_state.h
+@@ -0,0 +1,46 @@
++// Copyright (C) 2022 Then Try This
++//
++// This program is free software; you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation; either version 2 of the License, or
++// (at your option) any later version.
++//
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License for more details.
++//
++// You should have received a copy of the GNU General Public License
++// along with this program; if not, write to the Free Software
++// Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
++
++#include <random>
++#include <vector>
++#include "spiralcore/types.h"
++
++#pragma once
++
++namespace spiralcore {
++
++// Everything a search changes as it runs. Each renderer owns one, so
++// several renderers can search the same brain at once.
++class search_state {
++public:
++  search_state(u32 num_blocks, std::vector<bool> sound_enabled,
++               float usage_falloff, u32 seed) :
++    m_usage(num_blocks, 0),
++    m_sound_enabled(std::move(sound_enabled)),
++    m_usage_falloff(usage_falloff),
++    m_rng(seed) {}
++
++  // one per brain block
++  std::vector<float> m_usage;
++  // one per brain sound
++  std::vector<bool> m_sound_enabled;
++  float m_usage_falloff;
++  u32 m_current_block_index = 0;
++  double m_current_error = 0;
++  std::mt19937 m_rng;
++};
++
++}

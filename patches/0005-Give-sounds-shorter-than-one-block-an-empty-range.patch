@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sydney <sydney@hyphen-emdash.com>
+Date: Tue, 24 Nov 2026 20:08:07 -0800
+Subject: [PATCH 5/6] Give sounds shorter than one block an empty range
+
+chop_and_add sets a sound's end to the last block index. When the first
+sound is shorter than one block there are no blocks yet, so its end
+wrapped round to 4294967295 and searching read far past the blocks.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ brain/src/brain.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/brain/src/brain.cpp b/brain/src/brain.cpp
+index 4324148..3b31732 100644
+--- a/brain/src/brain.cpp
++++ b/brain/src/brain.cpp
+@@ -137,7 +137,8 @@ void brain::chop_and_add(sound &s, u32 count, u32 rate, bool ditchpcm) {
+     }
+     update_tick++;
+   }
+-  s.m_end = m_blocks.size()-1;
++  // a sound shorter than one block has no blocks at all
++  s.m_end = m_blocks.size()>s.m_start ? m_blocks.size()-1 : s.m_start;
+   s.m_num_blocks = s.m_end-s.m_start;
+ }
+ 

@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sydney <sydney@hyphen-emdash.com>
+Date: Tue, 24 Nov 2026 20:04:21 -0800
+Subject: [PATCH 3/6] Add brain::add_sound for sounds already in memory
+
+load_sound read a file and added it in one step. Hosts that already have
+the audio, like a plugin reading from its DAW, can now add it directly.
+load_sound calls add_sound once it has read the file.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ brain/src/brain.cpp | 6 +++++-
+ brain/src/brain.h   | 2 ++
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/brain/src/brain.cpp b/brain/src/brain.cpp
+index 2a1db9d..4324148 100644
+--- a/brain/src/brain.cpp
++++ b/brain/src/brain.cpp
+@@ -64,13 +64,17 @@ void brain::load_sound(std::string filename, stereo_mode mode) {
+     }
+ 
+     delete[] temp;
+-    m_samples.push_back(sound(filename,s));
++    add_sound(filename,s);
+     status::update("loaded %s",filename.c_str());
+   } else {
+     status::update("problem loading %s",filename.c_str());
+   }
+ }
+ 
++void brain::add_sound(const std::string &name, const sample &s) {
++  m_samples.push_back(sound(name,s));
++}
++
+ void brain::delete_sound(std::string filename) {
+   for (auto i=m_samples.begin(); i!=m_samples.end(); ++i) {
+     if (i->m_filename==filename) {
+diff --git a/brain/src/brain.h b/brain/src/brain.h
+index 86f3d21..f15b97c 100644
+--- a/brain/src/brain.h
++++ b/brain/src/brain.h
+@@ -44,6 +44,8 @@ public:
+     // load, chop up and add to brain
+     // todo: add tags
+     void load_sound(std::string filename, stereo_mode mode);
++    // add a sound that's already in memory
++    void add_sound(const std::string &name, const sample &s);
+     void delete_sound(std::string filename);
+     void clear_sounds() { m_samples.clear(); }
+ 

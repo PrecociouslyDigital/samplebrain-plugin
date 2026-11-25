@@ -1,0 +1,262 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sydney <sydney@hyphen-emdash.com>
+Date: Tue, 24 Nov 2026 20:04:13 -0800
+Subject: [PATCH 2/6] Pass the sample rate to brain::init
+
+brain::chop_and_add built every block at 44100, whatever the rate of the
+sound. The rate is now an argument to brain::init. Blocks already stored
+and saved their rate.
+
+The FFT and MFCC analysers were static members shared by every block, and
+init_fft only rebuilt them when the block size changed, not the rate. It
+also only deleted the old ones when they were null. Each thread now keeps
+its own analysers and rebuilds them when the size or the rate changes.
+
+FFTW's planner isn't thread safe, so plan creation and destruction take a
+lock. FFT's destructor also frees the spectrum and bins it was leaking.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ brain/src/block.cpp    | 25 ++++++++++++++++---------
+ brain/src/block.h      |  3 +--
+ brain/src/brain.cpp    | 18 +++++++++---------
+ brain/src/brain.h      |  4 ++--
+ brain/src/fft.cpp      | 12 +++++++++++-
+ brain/src/renderer.cpp |  6 +++---
+ 6 files changed, 42 insertions(+), 26 deletions(-)
+
+diff --git a/brain/src/block.cpp b/brain/src/block.cpp
+index 1fb1a4e..e20431d 100644
+--- a/brain/src/block.cpp
++++ b/brain/src/block.cpp
+@@ -17,13 +17,21 @@
+ #include <assert.h>
+ #include <float.h>
+ #include <iostream>
++#include <memory>
+ 
+ #include "block.h"
+ 
+ using namespace spiralcore;
+ 
+-FFT *block::m_fftw;
+-Aquila::Mfcc *block::m_mfcc_proc;
++// Each thread keeps its own analysers, so blocks can be built on several
++// threads at once.
++namespace {
++  struct analysers {
++    std::unique_ptr<FFT> fft;
++    std::unique_ptr<Aquila::Mfcc> mfcc;
++  };
++  thread_local analysers t_analysers;
++}
+ 
+ static const int MFCC_FILTERS=12;
+ static const int FFT_BIAS=200;
+@@ -77,8 +85,6 @@ block::block(u64 id, const string &filename, const sample &pcm, u32 rate, const
+   m_orig_filename(filename)
+ {
+   init_fft(m_pcm.get_length(),rate);
+-  assert(m_mfcc_proc!=NULL);
+-  assert(m_fftw!=NULL);
+ 
+   w.run(m_pcm);
+   process(m_pcm,m_fft,m_mfcc,m_dominant_freq);
+@@ -97,15 +103,16 @@ block::block(u64 id, const string &filename, const sample &pcm, u32 rate, const
+ 
+ 
+ void block::init_fft(u32 block_size, u32 rate) {
+-  if (m_fftw == NULL || m_fftw->m_length!=block_size) {
+-    if (m_fftw == NULL) delete m_fftw;
+-    m_fftw = new FFT(block_size,rate,100);
+-    if (m_mfcc_proc == NULL) delete m_mfcc_proc;
+-    m_mfcc_proc = new Aquila::Mfcc(block_size,rate);
++  analysers &a = t_analysers;
++  if (!a.fft || a.fft->m_length!=block_size || a.fft->m_rate!=rate) {
++    a.fft = std::make_unique<FFT>(block_size,rate,100);
++    a.mfcc = std::make_unique<Aquila::Mfcc>(block_size,rate);
+   }
+ }
+ 
+ void block::process(const sample &pcm, sample &fft, sample &mfcc, float &freq) {
++  FFT *m_fftw = t_analysers.fft.get();
++  Aquila::Mfcc *m_mfcc_proc = t_analysers.mfcc.get();
+   m_fftw->impulse2freq(pcm.get_buffer());
+   m_fftw->calculate_bins();
+ 
+diff --git a/brain/src/block.h b/brain/src/block.h
+index b9b14d7..d61ad43 100644
+--- a/brain/src/block.h
++++ b/brain/src/block.h
+@@ -49,6 +49,7 @@ namespace spiralcore {
+     const std::vector<u32> &get_synapse_const() const { return m_synapse; }
+     float get_freq() const { return m_dominant_freq; }
+     float get_n_freq() const { return m_n_dominant_freq; }
++    u32 get_rate() const { return m_rate; }
+ 
+   private:
+ 
+@@ -71,8 +72,6 @@ namespace spiralcore {
+     u32 m_block_size;
+     u32 m_rate;
+     std::string m_orig_filename;
+-    static FFT *m_fftw;
+-    static Aquila::Mfcc *m_mfcc_proc;
+ 
+     std::vector<u32> m_synapse;
+ 
+diff --git a/brain/src/brain.cpp b/brain/src/brain.cpp
+index a103874..2a1db9d 100644
+--- a/brain/src/brain.cpp
++++ b/brain/src/brain.cpp
+@@ -89,7 +89,7 @@ void brain::clear() {
+ }
+ 
+ // rewrites whole brain
+-void brain::init(u32 block_size, u32 overlap, window::type t, bool ditchpcm) {
++void brain::init(u32 block_size, u32 overlap, window::type t, u32 rate, bool ditchpcm) {
+   m_blocks.clear();
+   m_block_size = block_size;
+   m_overlap = overlap;
+@@ -102,7 +102,7 @@ void brain::init(u32 block_size, u32 overlap, window::type t, bool ditchpcm) {
+   for (auto &s:m_samples) {
+     status::sound_item(s.m_filename,"yellow");
+     count++;
+-    chop_and_add(s, count, ditchpcm);
++    chop_and_add(s, count, rate, ditchpcm);
+     if (count%2==0) status::sound_item(s.m_filename,"lightblue");
+     else status::sound_item(s.m_filename,"pink");
+   }
+@@ -110,7 +110,7 @@ void brain::init(u32 block_size, u32 overlap, window::type t, bool ditchpcm) {
+   status::update("all samples processed");
+ }
+ 
+-void brain::chop_and_add(sound &s, u32 count, bool ditchpcm) {
++void brain::chop_and_add(sound &s, u32 count, u32 rate, bool ditchpcm) {
+   s.m_start = m_blocks.size();
+   u32 pos=0;
+   if (m_overlap>=m_block_size) m_overlap=0;
+@@ -123,7 +123,7 @@ void brain::chop_and_add(sound &s, u32 count, bool ditchpcm) {
+   while (pos+m_block_size-1<len) {
+     sample region;
+     s.m_sample.get_region(region,pos,pos+m_block_size-1);
+-    m_blocks.push_back(block(m_blocks.size(),s.m_filename,region,44100,m_window,ditchpcm));
++    m_blocks.push_back(block(m_blocks.size(),s.m_filename,region,rate,m_window,ditchpcm));
+     pos += (m_block_size-m_overlap);
+ 
+      // periodic progress update
+@@ -414,12 +414,12 @@ bool brain::unit_test() {
+   b.load_sound("test_data/100i16.wav",MIX);
+   assert(b.m_samples.size()==2);
+ 
+-  b.init(10, 0, window::RECTANGLE);
++  b.init(10, 0, window::RECTANGLE, 44100);
+   assert(b.m_blocks.size()==20);
+-  b.init(10, 5, window::RECTANGLE);
++  b.init(10, 5, window::RECTANGLE, 44100);
+   assert(b.m_samples.size()==2);
+   assert(b.m_blocks.size()==38);
+-  b.init(20, 5, window::RECTANGLE);
++  b.init(20, 5, window::RECTANGLE, 44100);
+   assert(b.m_samples.size()==2);
+   assert(b.m_blocks.size()==12);
+ 
+@@ -430,8 +430,8 @@ bool brain::unit_test() {
+   brain b3;
+   b3.load_sound("test_data/up.wav",MIX);
+ 
+-  b2.init(512, 0, window::BLACKMAN);
+-  b3.init(512, 0, window::BLACKMAN);
++  b2.init(512, 0, window::BLACKMAN, 44100);
++  b3.init(512, 0, window::BLACKMAN, 44100);
+ 
+   search_params p(1,0,0,100,0);
+   search_state state(b3.get_num_blocks(),{true},0.9,0);
+diff --git a/brain/src/brain.h b/brain/src/brain.h
+index 6cb08c5..86f3d21 100644
+--- a/brain/src/brain.h
++++ b/brain/src/brain.h
+@@ -37,7 +37,7 @@ public:
+     enum stereo_mode { MIX, LEFT, RIGHT };
+ 
+     // rewrites whole brain
+-    void init(u32 block_size, u32 overlap, window::type t, bool ditchpcm=false);
++    void init(u32 block_size, u32 overlap, window::type t, u32 rate, bool ditchpcm=false);
+ 
+     void clear();
+ 
+@@ -89,7 +89,7 @@ public:
+ 
+ private:
+ 
+-    void chop_and_add(sound &s, u32 count, bool ditchpcm=false);
++    void chop_and_add(sound &s, u32 count, u32 rate, bool ditchpcm=false);
+     void deplete_usage(search_state &state) const;
+     u32 stickify(const block &target, u32 closest_index, f32 dist, const search_params &params, search_state &state) const;
+     void recompute_sample_sections();
+diff --git a/brain/src/fft.cpp b/brain/src/fft.cpp
+index 35ba2eb..76a1eb7 100644
+--- a/brain/src/fft.cpp
++++ b/brain/src/fft.cpp
+@@ -18,10 +18,14 @@
+ #include <string.h>
+ 
+ #include <iostream>
++#include <mutex>
+ 
+ using namespace spiralcore;
+ using namespace std;
+ 
++// FFTW's planner isn't thread safe, only fftw_execute is
++static std::mutex planner_mutex;
++
+ static const int MAX_FFT_LENGTH = 4096;
+ 
+ FFT::FFT(u32 length, u32 rate, u32 bins) :
+@@ -33,12 +37,18 @@ FFT::FFT(u32 length, u32 rate, u32 bins) :
+   m_bin(new float[bins])
+ {
+   memset(m_spectrum,0,sizeof(fftw_complex)*length);
++  std::lock_guard<std::mutex> lock(planner_mutex);
+   m_plan = fftw_plan_dft_r2c_1d(m_length, m_in, m_spectrum, FFTW_ESTIMATE);
+ }
+ 
+ FFT::~FFT() {
++  {
++    std::lock_guard<std::mutex> lock(planner_mutex);
++    fftw_destroy_plan(m_plan);
++  }
+   delete[] m_in;
+-  fftw_destroy_plan(m_plan);
++  delete[] m_spectrum;
++  delete[] m_bin;
+ }
+ 
+ void FFT::impulse2freq(const float *imp) {
+diff --git a/brain/src/renderer.cpp b/brain/src/renderer.cpp
+index c7cb8f6..1d1d8f7 100644
+--- a/brain/src/renderer.cpp
++++ b/brain/src/renderer.cpp
+@@ -280,11 +280,11 @@ ios &spiralcore::operator||(ios &s, renderer &r) {
+ bool renderer::unit_test() {
+   brain source;
+   source.load_sound("test_data/up.wav", brain::MIX);
+-  source.init(10,0,window::RECTANGLE);
++  source.init(10,0,window::RECTANGLE,44100);
+ 
+   brain target;
+   target.load_sound("test_data/up.wav", brain::MIX);
+-  target.init(10,0,window::RECTANGLE);
++  target.init(10,0,window::RECTANGLE,44100);
+ 
+   renderer rr(source,target,search_state(source.get_num_blocks(),{true},0.9,0));
+   rr.set_playing(true);
+@@ -302,7 +302,7 @@ bool renderer::unit_test() {
+   rr.process(5,buf);
+   assert(rr.m_render_blocks.size()==1);
+ 
+-  target.init(10,5,window::RECTANGLE);
++  target.init(10,5,window::RECTANGLE,44100);
+   rr.process(10,buf);
+   rr.process(10,buf);
+   rr.process(10,buf);
