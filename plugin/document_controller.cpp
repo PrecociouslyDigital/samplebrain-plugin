@@ -146,42 +146,69 @@ void SamplebrainDocumentController::brain_changed(BrainState &brain) {
   changed();
 }
 
+template <class Work, class Apply>
+void SamplebrainDocumentController::load(BrainState &brain, Work work, Apply apply) {
+  ++brain.loading;
+  engine_->pool().addJob(
+      [self = juce::WeakReference(this), id = brain.definition.id, work, apply] {
+        std::optional<decltype(work())> result;
+        try {
+          result = work();
+        } catch (...) {
+        }
+        post(self, [=](SamplebrainDocumentController &dc) {
+          BrainState *b = dc.find_brain(id);
+          if (!b) return;
+          --b->loading;
+          if (result) apply(dc, *b, *result);
+          if (!b->busy()) dc.render_brain_clips(id);
+          dc.changed();
+        });
+      });
+}
+
+namespace {
+// What refresh_keys finds: the sounds, and the brain if it's already built.
+struct KeyLookup {
+  std::optional<LoadedSounds> sounds;
+  std::optional<LoadedBrain> built;
+  std::string error;
+};
+} // namespace
+
 // Works out the key the brain's samples and settings give now, and loads
 // that brain straight away if it's already built.
 void SamplebrainDocumentController::refresh_keys(BrainState &brain) {
-  for (unsigned rate : rates_for(brain.definition.id)) {
-    ++brain.loading;
-    engine_->pool().addJob([engine = engine_, self = juce::WeakReference(this),
-                            definition = brain.definition, revision = brain.revision,
-                            rate] {
-      auto sounds = engine->load_sounds(definition, rate);
-      std::optional<LoadedBrain> built;
-      std::string error;
-      if (sounds) {
-        try {
-          auto found = engine->brain(definition, *sounds, rate, false);
-          if (found) built = *found;
-          else error = found.error();
-        } catch (const std::exception &e) {
-          error = e.what();
-        }
-      } else {
-        error = sounds.error();
-      }
-      post(self, [=, sounds = std::move(sounds)](SamplebrainDocumentController &dc) {
-        BrainState *b = dc.find_brain(definition.id);
-        if (!b) return;
-        --b->loading;
-        if (b->revision == revision) {
-          b->error = error;
-          if (sounds) b->current.insert_or_assign(rate, *sounds);
-          if (built) b->playing.insert_or_assign(rate, PlayingBrain{*built, definition.paths()});
-        }
-        if (built || !b->busy()) dc.render_brain_clips(definition.id);
-        dc.changed();
-      });
-    });
-  }
+  for (unsigned rate : rates_for(brain.definition.id))
+    load(
+        brain,
+        [engine = engine_, definition = brain.definition, rate] {
+          KeyLookup found;
+          try {
+            auto sounds = engine->load_sounds(definition, rate);
+            if (!sounds) {
+              found.error = sounds.error();
+              return found;
+            }
+            found.sounds = *sounds;
+            auto built = engine->brain(definition, *sounds, rate, false);
+            if (built) found.built = *built;
+            else found.error = built.error();
+          } catch (const std::exception &e) {
+            found.error = e.what();
+          }
+          return found;
+        },
+        [revision = brain.revision, rate](SamplebrainDocumentController &dc, BrainState &b,
+                                          const KeyLookup &found) {
+          if (b.revision != revision) return;
+          b.error = found.error;
+          if (found.sounds) b.current.insert_or_assign(rate, *found.sounds);
+          if (found.built) {
+            b.playing.insert_or_assign(rate, PlayingBrain{*found.built, b.definition.paths()});
+            dc.render_brain_clips(b.definition.id);
+          }
+        });
 }
 
 void SamplebrainDocumentController::build_brain(const juce::String &id) {
@@ -421,12 +448,15 @@ void SamplebrainDocumentController::willBeginEditing(juce::ARADocument *) {
 
 void SamplebrainDocumentController::didEndEditing(juce::ARADocument *) {
   editing_ = false;
+#ifdef SB_TEST_HOOKS
   if (brains_.empty()) add_test_brain();
+#endif
   for (auto *m : modifications())
     if (std::holds_alternative<Idle>(m->status()) && !m->render_due()) schedule_render(*m);
   changed();
 }
 
+#ifdef SB_TEST_HOOKS
 // For testing in a host without its GUI: SAMPLEBRAIN_TEST_SAMPLES lists
 // sample files, separated by colons, to build a brain from.
 void SamplebrainDocumentController::add_test_brain() {
@@ -439,6 +469,7 @@ void SamplebrainDocumentController::add_test_brain() {
   brain_changed(brain);
   build_brain(brain.definition.id);
 }
+#endif
 
 juce::ARAAudioModification *SamplebrainDocumentController::doCreateAudioModification(
     juce::ARAAudioSource *source, ARA::ARAAudioModificationHostRef ref,
@@ -527,19 +558,14 @@ bool SamplebrainDocumentController::doRestoreObjectsFromStream(
           std::vector<juce::String> paths;
           if (const auto *p = entry.value["paths"].getArray())
             for (const auto &path : *p) paths.push_back(path.toString());
-          ++brain->loading;
-          engine_->pool().addJob([engine = engine_, self = juce::WeakReference(this),
-                                  id = brain->definition.id, rate, key = *key, paths] {
-            auto loaded = engine->cached_brain(key);
-            post(self, [=](SamplebrainDocumentController &dc) {
-              BrainState *b = dc.find_brain(id);
-              if (!b) return;
-              --b->loading;
-              if (loaded) b->playing.try_emplace(rate, PlayingBrain{*loaded, paths});
-              if (loaded || !b->busy()) dc.render_brain_clips(id);
-              dc.changed();
-            });
-          });
+          load(
+              *brain, [engine = engine_, key = *key] { return engine->cached_brain(key); },
+              [rate, paths](SamplebrainDocumentController &dc, BrainState &b,
+                            const std::optional<LoadedBrain> &loaded) {
+                if (!loaded) return;
+                b.playing.try_emplace(rate, PlayingBrain{*loaded, paths});
+                dc.render_brain_clips(b.definition.id);
+              });
         }
     }
 

@@ -1,4 +1,5 @@
 #include <atomic>
+#include <chrono>
 #include <thread>
 
 #include <catch2/catch_test_macros.hpp>
@@ -48,12 +49,15 @@ TEST_CASE("readers never see a published value freed") {
 
     // Keep publishing until the readers have overlapped plenty of writes,
     // however late their threads start.
+    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     int i = 0;
-    for (; i < 5000 || reads < 10000; ++i) published.publish(std::make_shared<const Value>(i));
+    for (; (i < 5000 || reads < 10000) && std::chrono::steady_clock::now() < give_up; ++i)
+      published.publish(std::make_shared<const Value>(i));
     last = i - 1;
     stop = true;
   }
 
+  CHECK(reads >= 10000);
   CHECK(bad == 0);
   for (auto &epoch : epochs) registry.remove(epoch.get());
   published.collect();

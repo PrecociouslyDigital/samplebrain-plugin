@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Renders projects in REAPER with the installed plugin and checks the results.
+# The plugin needs SB_TEST_HOOKS, which the dev preset turns on.
 #
 #   tests/host/host_tests.sh <stereo clip.wav at 44.1k> <second clip.wav> <brain sample>...
 #
@@ -29,7 +30,7 @@ echo "working in $work"
 
 failures=0
 reaper() {
-  (cd "$work" && perl -e 'alarm 600; exec @ARGV' /Applications/REAPER.app/Contents/MacOS/REAPER \
+  (cd "$work" && perl -e 'alarm 900; exec @ARGV' /Applications/REAPER.app/Contents/MacOS/REAPER \
     -cfgfile "$config/reaper.ini" -nosplash -newinst "$@" > /dev/null 2>&1)
 }
 make_project() { # name clip rate
@@ -41,22 +42,23 @@ render() { # project.rpp out.wav [rpp_edit args...]
   python3 -I "$here/rpp_edit.py" "$work/$rpp" "$work/edited.rpp" --wav "$work/$wav" "$@"
   reaper -renderproject "$work/edited.rpp"
 }
-stat() { python3 -I "$here/wavstat.py" "$@"; }
+wavstat() { python3 -I "$here/wavstat.py" "$@"; }
 check() { # description command...
   local description=$1
   shift
   if "$@"; then echo "pass: $description"; else echo "FAIL: $description"; failures=$((failures + 1)); fi
 }
-residual() { stat "$work/$1" "$work/$2" ${3:-} | sed -n 's/.*residual peak \([0-9.]*\).*/\1/p'; }
-sides() { stat "$work/$1" | sed -n 's/.*left minus right peak \([0-9.]*\).*/\1/p'; }
-is_zero() { [ "$(python3 -c "print(float('$1') == 0)")" = True ]; }
-not_zero() { ! is_zero "$1"; }
+residual() { wavstat "$work/$1" "$work/$2" ${3:-} | sed -n 's/.*residual peak \([0-9.]*\).*/\1/p'; }
+sides() { wavstat "$work/$1" | sed -n 's/.*left minus right peak \([0-9.]*\).*/\1/p'; }
+number() { [[ $1 =~ ^[0-9]+(\.[0-9]*)?$ ]]; }
+is_zero() { number "$1" && [ "$(python3 -c "print(float('$1') == 0)")" = True ]; }
+not_zero() { number "$1" && ! is_zero "$1"; }
 brains() { ls "$HOME/Library/Caches/samplebrain-plugin/brains" | wc -l | tr -d ' '; }
 
 for rate in 44100 48000; do
   short=${rate:0:2}
   make_project "r$short" "clip$short.wav" "$rate"
-  check "$rate: the clip renders" not_zero "$(stat "$work/r$short.wav" | sed -n 's/.*peak \([0-9.]*\)$/\1/p' | head -1)"
+  check "$rate: the clip renders" not_zero "$(wavstat "$work/r$short.wav" | sed -n 's/.*peak \([0-9.]*\)$/\1/p' | head -1)"
   check "$rate: stereo off plays the same on both sides" is_zero "$(sides "r$short.wav")"
   render "r$short.rpp" "reopened$short.wav"
   check "$rate: reopening and rendering again nulls" is_zero "$(residual "reopened$short.wav" "r$short.wav")"

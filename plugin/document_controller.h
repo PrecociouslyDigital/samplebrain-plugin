@@ -153,11 +153,16 @@ private:
   std::vector<unsigned> rates_for(const juce::String &brain_id);
   void brain_changed(BrainState &);
   void refresh_keys(BrainState &);
+  // Runs work on the pool, counting as one of the brain's loads until it
+  // finishes, then hands its result to apply unless it threw.
+  template <class Work, class Apply> void load(BrainState &, Work, Apply);
   void schedule_render(SamplebrainAudioModification &, juce::RelativeTime delay = {});
   void start_render(SamplebrainAudioModification &);
   void render_brain_clips(const juce::String &brain_id);
   void changed() { ++version_; }
+#ifdef SB_TEST_HOOKS
   void add_test_brain();
+#endif
   std::shared_ptr<JobProgress> new_job();
 
   std::shared_ptr<EngineService> engine_ = std::make_shared<EngineService>();

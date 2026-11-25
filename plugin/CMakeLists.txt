@@ -1,4 +1,5 @@
 option(SB_COPY_PLUGIN "Install the plugin into ~/Library/Audio/Plug-Ins after building" OFF)
+option(SB_TEST_HOOKS "Let tests/host/host_tests.sh give the plugin a brain without its GUI" OFF)
 
 add_subdirectory(${JUCE_DIR} ${CMAKE_BINARY_DIR}/juce EXCLUDE_FROM_ALL)
 juce_set_ara_sdk_path(${ARA_SDK_DIR})
@@ -34,6 +35,10 @@ target_compile_definitions(Samplebrain PUBLIC
   JUCE_VST3_CAN_REPLACE_VST2=0
   JUCE_DISPLAY_SPLASH_SCREEN=0
 )
+
+if(SB_TEST_HOOKS)
+  target_compile_definitions(Samplebrain PRIVATE SB_TEST_HOOKS)
+endif()
 
 target_link_libraries(Samplebrain
   PRIVATE

@@ -13,7 +13,8 @@
       "displayName": "Debug build that installs into ~/Library/Audio/Plug-Ins",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "SB_COPY_PLUGIN": "ON"
+        "SB_COPY_PLUGIN": "ON",
+        "SB_TEST_HOOKS": "ON"
       }
     },
     {
