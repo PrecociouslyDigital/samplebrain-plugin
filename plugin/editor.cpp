@@ -201,11 +201,19 @@ BrainState *SamplebrainEditor::brain() const {
 std::vector<SamplebrainAudioModification *> SamplebrainEditor::clips() const {
   std::vector<SamplebrainAudioModification *> found;
   auto &p = static_cast<SamplebrainProcessor &>(processor);
+  auto add = [&](juce::ARAPlaybackRegion *region) {
+    auto *m = region->getAudioModification<SamplebrainAudioModification>();
+    if (std::ranges::find(found, m) == found.end()) found.push_back(m);
+  };
   if (auto *renderer = p.getPlaybackRenderer<SamplebrainPlaybackRenderer>())
-    for (auto *region : renderer->getPlaybackRegions()) {
-      auto *m = region->getAudioModification<SamplebrainAudioModification>();
-      if (std::ranges::find(found, m) == found.end()) found.push_back(m);
-    }
+    for (auto *region : renderer->getPlaybackRegions()) add(region);
+  // As a track effect, REAPER makes the instance an editor renderer for the
+  // whole track instead.
+  if (auto *renderer = p.getEditorRenderer<juce::ARAEditorRenderer>()) {
+    for (auto *region : renderer->getPlaybackRegions()) add(region);
+    for (auto *sequence : renderer->getRegionSequences())
+      for (auto *region : sequence->getPlaybackRegions<juce::ARAPlaybackRegion>()) add(region);
+  }
   return found;
 }
 
@@ -284,7 +292,7 @@ void SamplebrainEditor::refresh() {
   for (auto &control : brain_controls_) control->setEnabled(b != nullptr);
   if (b) {
     const int users = dc->clips_using(brain_id_);
-    brain_users_.setText("used by " + juce::String(users) + (users == 1 ? " clip" : " clips"),
+    brain_users_.setText(juce::String(users) + (users == 1 ? " clip" : " clips"),
                          juce::dontSendNotification);
     for (std::size_t i = 0; i < brain_controls_.size(); ++i)
       brain_controls_[i]->set_value(get_field(b->definition.settings, brain_params[i].id));
@@ -319,7 +327,7 @@ void SamplebrainEditor::refresh_progress() {
   if (b && b->build) samples_.repaint();
 
   auto *c = clip();
-  clip_status_.setText(c ? status_text(c->status()) : juce::String("this track has no clips"),
+  clip_status_.setText(c ? status_text(c->status()) : juce::String(),
                        juce::dontSendNotification);
 }
 
