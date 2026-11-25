@@ -313,10 +313,10 @@ void SamplebrainDocumentController::schedule_render(SamplebrainAudioModification
 }
 
 void SamplebrainDocumentController::start_render(SamplebrainAudioModification &m) {
-  m.set_render_due(std::nullopt);
   if (auto *r = std::get_if<Rendering>(&m.status())) r->progress->cancel();
-  m.set_status(Idle{});
 
+  // The status changes once, straight from one state to the next, so an
+  // offline render waiting on pending() never sees it drop in between.
   auto *source = m.getAudioSource();
   BrainState *brain = find_brain(m.settings.brain_id);
   const auto rate = unsigned(source->getSampleRate());
@@ -324,15 +324,18 @@ void SamplebrainDocumentController::start_render(SamplebrainAudioModification &m
   if (brain)
     if (auto it = brain->playing.find(rate); it != brain->playing.end()) playing = &it->second;
 
+  std::optional<Waiting> waiting;
   if (!source->isSampleAccessEnabled())
-    m.set_status(Waiting{"waiting for the host to share the clip's audio"});
+    waiting = Waiting{"waiting for the host to share the clip's audio"};
   else if (!brain)
-    m.set_status(Waiting{"choose a brain"});
+    waiting = Waiting{"choose a brain"};
   else if (!playing && brain->busy())
-    m.set_status(Waiting{"waiting for the brain", true});
+    waiting = Waiting{"waiting for the brain", true};
   else if (!playing)
-    m.set_status(Waiting{"build the brain"});
-  if (std::holds_alternative<Waiting>(m.status())) {
+    waiting = Waiting{"build the brain"};
+  if (waiting) {
+    m.set_status(*waiting);
+    m.set_render_due(std::nullopt);
     changed();
     return;
   }
@@ -341,6 +344,7 @@ void SamplebrainDocumentController::start_render(SamplebrainAudioModification &m
   render.sound_enabled = brain->sound_enabled(*playing);
   auto progress = new_job();
   m.set_status(Rendering{progress});
+  m.set_render_due(std::nullopt);
   const std::uint64_t generation = ++*m.generation;
   auto reader = std::make_shared<juce::ARAAudioSourceReader>(source);
   changed();
