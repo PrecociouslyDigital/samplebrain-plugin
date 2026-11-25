@@ -26,12 +26,14 @@ public:
   using juce::ARAPlaybackRenderer::processBlock;
 
 private:
+  void wait_for_renders();
   bool render(juce::AudioBuffer<float> &, const juce::AudioPlayHead::PositionInfo &)
       noexcept [[clang::nonblocking]];
 
   SamplebrainDocumentController &controller_;
   ReaderEpoch epoch_;
   double rate_ = 44100;
+  bool gave_up_waiting_ = false;
   // Each region renders here, then adds into the output so overlaps sum.
   juce::AudioBuffer<float> mix_;
 };

@@ -46,9 +46,7 @@ target_link_libraries(Samplebrain
     juce::juce_recommended_warning_flags
 )
 
-if(SB_RTSAN)
-  # Only the playback callback is marked nonblocking, so RealtimeSanitizer
-  # checks just that code for allocations and locks.
-  target_compile_options(Samplebrain PRIVATE -fsanitize=realtime)
-  target_link_options(Samplebrain PRIVATE -fsanitize=realtime)
-endif()
+# Clang checks that the nonblocking playback callback only calls
+# nonblocking code. RealtimeSanitizer can't do this in a host, because
+# hardened hosts like REAPER won't load its runtime.
+target_compile_options(Samplebrain PRIVATE -Werror=function-effects)

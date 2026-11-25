@@ -307,7 +307,7 @@ void SamplebrainEditor::refresh_progress() {
   if (b && b->build) samples_.repaint();
 
   auto *c = clip();
-  clip_status_.setText(c ? status_text(c->status) : juce::String("this track has no clips"),
+  clip_status_.setText(c ? status_text(c->status()) : juce::String("this track has no clips"),
                        juce::dontSendNotification);
 }
 

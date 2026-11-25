@@ -34,6 +34,22 @@ SamplebrainAudioModification::SamplebrainAudioModification(
     settings = original->settings;
 }
 
+void SamplebrainAudioModification::set_status(RenderStatus status) {
+  status_ = std::move(status);
+  update_pending();
+}
+
+void SamplebrainAudioModification::set_render_due(std::optional<juce::Time> due) {
+  render_due_ = due;
+  update_pending();
+}
+
+void SamplebrainAudioModification::update_pending() {
+  const auto *waiting = std::get_if<Waiting>(&status_);
+  pending_ = render_due_.has_value() || std::holds_alternative<Rendering>(status_) ||
+             (waiting && waiting->for_brain);
+}
+
 bool BrainState::needs_build() const {
   return std::ranges::any_of(current, [&](const auto &entry) {
     auto it = playing.find(entry.first);
@@ -52,13 +68,19 @@ std::vector<bool> BrainState::sound_enabled(const PlayingBrain &brain) const {
 
 // ---------------------------------------------------------------------------
 
+// The ARA document is already gone by now, so this doesn't look at it.
 SamplebrainDocumentController::~SamplebrainDocumentController() {
   stopTimer();
-  for (auto &brain : brains_)
-    if (brain->build) brain->build->cancel();
-  for (auto *m : modifications())
-    if (auto *r = std::get_if<Rendering>(&m->status)) r->progress->cancel();
+  for (const auto &job : jobs_)
+    if (auto progress = job.lock()) progress->cancel();
   engine_->pool().removeAllJobs(true, 10000);
+}
+
+std::shared_ptr<JobProgress> SamplebrainDocumentController::new_job() {
+  std::erase_if(jobs_, [](const auto &job) { return job.expired(); });
+  auto job = std::make_shared<JobProgress>();
+  jobs_.push_back(job);
+  return job;
 }
 
 SamplebrainDocumentController *
@@ -85,6 +107,8 @@ BrainState *SamplebrainDocumentController::find_brain(const juce::String &id) {
 BrainState &SamplebrainDocumentController::add_brain() {
   auto &brain = *brains_.emplace_back(std::make_unique<BrainState>());
   brain.definition.name = "Brain " + juce::String(brains_.size());
+  for (auto *m : modifications())
+    if (!find_brain(m->settings.brain_id)) m->settings.brain_id = brain.definition.id;
   changed();
   return brain;
 }
@@ -126,6 +150,7 @@ void SamplebrainDocumentController::brain_changed(BrainState &brain) {
 // that brain straight away if it's already built.
 void SamplebrainDocumentController::refresh_keys(BrainState &brain) {
   for (unsigned rate : rates_for(brain.definition.id)) {
+    ++brain.loading;
     engine_->pool().addJob([engine = engine_, self = juce::WeakReference(this),
                             definition = brain.definition, revision = brain.revision,
                             rate] {
@@ -145,14 +170,14 @@ void SamplebrainDocumentController::refresh_keys(BrainState &brain) {
       }
       post(self, [=, sounds = std::move(sounds)](SamplebrainDocumentController &dc) {
         BrainState *b = dc.find_brain(definition.id);
-        if (!b || b->revision != revision) return;
-        b->error = error;
-        if (sounds) b->current.insert_or_assign(rate, *sounds);
-        if (built) {
-          const std::vector<juce::String> paths = definition.paths();
-          b->playing.insert_or_assign(rate, PlayingBrain{*built, paths});
-          dc.render_brain_clips(definition.id);
+        if (!b) return;
+        --b->loading;
+        if (b->revision == revision) {
+          b->error = error;
+          if (sounds) b->current.insert_or_assign(rate, *sounds);
+          if (built) b->playing.insert_or_assign(rate, PlayingBrain{*built, definition.paths()});
         }
+        if (built || !b->busy()) dc.render_brain_clips(definition.id);
         dc.changed();
       });
     });
@@ -165,7 +190,7 @@ void SamplebrainDocumentController::build_brain(const juce::String &id) {
   std::vector<unsigned> rates = rates_for(id);
   if (rates.empty()) rates.push_back(44100);
 
-  auto progress = std::make_shared<JobProgress>();
+  auto progress = new_job();
   brain->build = progress;
   brain->error.clear();
   changed();
@@ -207,7 +232,7 @@ void SamplebrainDocumentController::build_brain(const juce::String &id) {
         b->playing.insert_or_assign(rate, PlayingBrain{brain, paths});
         if (b->revision == revision) b->current.insert_or_assign(rate, sounds.at(rate));
       }
-      if (!built.empty()) dc.render_brain_clips(definition.id);
+      dc.render_brain_clips(definition.id);
       dc.changed();
     });
   });
@@ -235,7 +260,7 @@ void SamplebrainDocumentController::export_brain(const juce::String &id,
 void SamplebrainDocumentController::import_brain(
     const juce::File &file, std::function<void(const juce::String &)> done) {
   if (import_) return;
-  import_ = std::make_shared<JobProgress>();
+  import_ = new_job();
   import_error_.clear();
   changed();
   engine_->pool().addJob([engine = engine_, self = juce::WeakReference(this), file,
@@ -283,14 +308,14 @@ void SamplebrainDocumentController::render_brain_clips(const juce::String &brain
 
 void SamplebrainDocumentController::schedule_render(SamplebrainAudioModification &m,
                                                     juce::RelativeTime delay) {
-  m.render_due = juce::Time::getCurrentTime() + delay;
+  m.set_render_due(juce::Time::getCurrentTime() + delay);
   if (!isTimerRunning()) startTimer(timer_ms);
 }
 
 void SamplebrainDocumentController::start_render(SamplebrainAudioModification &m) {
-  m.render_due.reset();
-  if (auto *r = std::get_if<Rendering>(&m.status)) r->progress->cancel();
-  m.status = Idle{};
+  m.set_render_due(std::nullopt);
+  if (auto *r = std::get_if<Rendering>(&m.status())) r->progress->cancel();
+  m.set_status(Idle{});
 
   auto *source = m.getAudioSource();
   BrainState *brain = find_brain(m.settings.brain_id);
@@ -300,20 +325,22 @@ void SamplebrainDocumentController::start_render(SamplebrainAudioModification &m
     if (auto it = brain->playing.find(rate); it != brain->playing.end()) playing = &it->second;
 
   if (!source->isSampleAccessEnabled())
-    m.status = Waiting{"waiting for the host to share the clip's audio"};
+    m.set_status(Waiting{"waiting for the host to share the clip's audio"});
   else if (!brain)
-    m.status = Waiting{"choose a brain"};
+    m.set_status(Waiting{"choose a brain"});
+  else if (!playing && brain->busy())
+    m.set_status(Waiting{"waiting for the brain", true});
   else if (!playing)
-    m.status = Waiting{"build the brain"};
-  if (std::holds_alternative<Waiting>(m.status)) {
+    m.set_status(Waiting{"build the brain"});
+  if (std::holds_alternative<Waiting>(m.status())) {
     changed();
     return;
   }
 
   RenderSettings render = m.settings.render;
   render.sound_enabled = brain->sound_enabled(*playing);
-  auto progress = std::make_shared<JobProgress>();
-  m.status = Rendering{progress};
+  auto progress = new_job();
+  m.set_status(Rendering{progress});
   const std::uint64_t generation = ++*m.generation;
   auto reader = std::make_shared<juce::ARAAudioSourceReader>(source);
   changed();
@@ -357,10 +384,10 @@ void SamplebrainDocumentController::start_render(SamplebrainAudioModification &m
       if (!m || *m->generation != generation) return;
       if (result) {
         m->render.publish(*result);
-        m->status = Ready{};
+        m->set_status(Ready{});
         m->notifyContentChanged(juce::ARAContentUpdateScopes::samplesAreAffected(), true);
       } else if (result.error() != "cancelled") {
-        m->status = Failed{result.error()};
+        m->set_status(Failed{result.error()});
       }
       dc.changed();
     });
@@ -372,8 +399,8 @@ void SamplebrainDocumentController::timerCallback() {
   bool waiting = false;
   for (auto *m : modifications()) {
     m->render.collect();
-    if (m->render_due && *m->render_due <= now && !editing_) start_render(*m);
-    waiting |= m->render_due.has_value() || m->render.has_retired();
+    if (m->render_due() && *m->render_due() <= now && !editing_) start_render(*m);
+    waiting |= m->render_due().has_value() || m->render.has_retired();
   }
   if (!waiting) stopTimer();
 }
@@ -390,9 +417,23 @@ void SamplebrainDocumentController::willBeginEditing(juce::ARADocument *) {
 
 void SamplebrainDocumentController::didEndEditing(juce::ARADocument *) {
   editing_ = false;
+  if (brains_.empty()) add_test_brain();
   for (auto *m : modifications())
-    if (std::holds_alternative<Idle>(m->status) && !m->render_due) schedule_render(*m);
+    if (std::holds_alternative<Idle>(m->status()) && !m->render_due()) schedule_render(*m);
   changed();
+}
+
+// For testing in a host without its GUI: SAMPLEBRAIN_TEST_SAMPLES lists
+// sample files, separated by colons, to build a brain from.
+void SamplebrainDocumentController::add_test_brain() {
+  const juce::String samples =
+      juce::SystemStats::getEnvironmentVariable("SAMPLEBRAIN_TEST_SAMPLES", {});
+  if (samples.isEmpty() || modifications().empty()) return;
+  BrainState &brain = add_brain();
+  for (const auto &path : juce::StringArray::fromTokens(samples, ":", ""))
+    brain.definition.samples.push_back({path, true});
+  brain_changed(brain);
+  build_brain(brain.definition.id);
 }
 
 juce::ARAAudioModification *SamplebrainDocumentController::doCreateAudioModification(
@@ -482,14 +523,16 @@ bool SamplebrainDocumentController::doRestoreObjectsFromStream(
           std::vector<juce::String> paths;
           if (const auto *p = entry.value["paths"].getArray())
             for (const auto &path : *p) paths.push_back(path.toString());
+          ++brain->loading;
           engine_->pool().addJob([engine = engine_, self = juce::WeakReference(this),
                                   id = brain->definition.id, rate, key = *key, paths] {
             auto loaded = engine->cached_brain(key);
             post(self, [=](SamplebrainDocumentController &dc) {
               BrainState *b = dc.find_brain(id);
-              if (!b || !loaded) return;
-              b->playing.try_emplace(rate, PlayingBrain{*loaded, paths});
-              dc.render_brain_clips(id);
+              if (!b) return;
+              --b->loading;
+              if (loaded) b->playing.try_emplace(rate, PlayingBrain{*loaded, paths});
+              if (loaded || !b->busy()) dc.render_brain_clips(id);
               dc.changed();
             });
           });

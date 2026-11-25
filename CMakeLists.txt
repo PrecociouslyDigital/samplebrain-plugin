@@ -15,8 +15,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET 14.0)
 option(SB_BUILD_TESTS "Build the engine tests" ON)
 option(SB_BUILD_BENCH "Build the engine benchmark" ON)
 option(SB_BUILD_PLUGIN "Build the plugin" ON)
-option(SB_RTSAN "Check the audio callback with RealtimeSanitizer" OFF)
-set(SB_SANITIZE "" CACHE STRING "Sanitizer for the engine and tests: address or thread")
+set(SB_SANITIZE "" CACHE STRING "Sanitizer for the engine and tests: address, thread or realtime")
 
 # The nix shell's paths change whenever an input or patch does, so they
 # replace whatever an earlier configure cached.

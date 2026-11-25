@@ -18,6 +18,9 @@ class SamplebrainDocumentController;
 struct Idle {};
 struct Waiting {
   std::string reason;
+  // Whether it's waiting for its brain to load or build, rather than for
+  // the user.
+  bool for_brain = false;
 };
 struct Rendering {
   std::shared_ptr<JobProgress> progress;
@@ -36,14 +39,27 @@ public:
                                ReaderRegistry &);
 
   ClipSettings settings;
-  RenderStatus status = Idle{};
   Published<RenderCache> render;
 
   // Bumped for every new render, so older ones can tell they're stale.
   std::shared_ptr<std::atomic<std::uint64_t>> generation =
       std::make_shared<std::atomic<std::uint64_t>>(0);
+
+  const RenderStatus &status() const { return status_; }
+  void set_status(RenderStatus);
   // When the next render should start. Set by edits, after a short pause.
-  std::optional<juce::Time> render_due;
+  const std::optional<juce::Time> &render_due() const { return render_due_; }
+  void set_render_due(std::optional<juce::Time>);
+  // Whether a render is due, running, or waiting on its brain. Offline
+  // renders wait for this to clear.
+  bool pending() const noexcept { return pending_.load(); }
+
+private:
+  void update_pending();
+
+  RenderStatus status_ = Idle{};
+  std::optional<juce::Time> render_due_;
+  std::atomic<bool> pending_ = false;
 
   JUCE_DECLARE_WEAK_REFERENCEABLE(SamplebrainAudioModification)
 };
@@ -68,6 +84,10 @@ struct BrainState {
   std::vector<juce::String> missing;
   // Bumped for every definition change, so older key jobs can tell.
   std::uint64_t revision = 0;
+  // Jobs looking for or loading a built brain.
+  int loading = 0;
+
+  bool busy() const { return loading > 0 || build != nullptr; }
 
   bool needs_build() const;
   // Which of the playing brain's sounds are switched on.
@@ -137,12 +157,16 @@ private:
   void start_render(SamplebrainAudioModification &);
   void render_brain_clips(const juce::String &brain_id);
   void changed() { ++version_; }
+  void add_test_brain();
+  std::shared_ptr<JobProgress> new_job();
 
   std::shared_ptr<EngineService> engine_ = std::make_shared<EngineService>();
   ReaderRegistry readers_;
   std::atomic<bool> editing_ = false;
   std::vector<std::unique_ptr<BrainState>> brains_;
   std::shared_ptr<JobProgress> import_;
+  // Every running job's progress, so they can all be cancelled.
+  std::vector<std::weak_ptr<JobProgress>> jobs_;
   std::string import_error_;
   std::uint64_t version_ = 0;
 

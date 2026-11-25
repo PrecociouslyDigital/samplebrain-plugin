@@ -25,6 +25,7 @@ TEST_CASE("readers never see a published value freed") {
   Published<Value> published(registry);
   std::atomic<bool> stop = false;
   std::atomic<int> bad = 0, reads = 0;
+  int last = 0;
 
   std::vector<std::unique_ptr<ReaderEpoch>> epochs;
   for (int i = 0; i < 3; ++i) {
@@ -45,16 +46,19 @@ TEST_CASE("readers never see a published value freed") {
         }
       });
 
-    for (int i = 0; i < 5000; ++i) published.publish(std::make_shared<const Value>(i));
+    // Keep publishing until the readers have overlapped plenty of writes,
+    // however late their threads start.
+    int i = 0;
+    for (; i < 5000 || reads < 10000; ++i) published.publish(std::make_shared<const Value>(i));
+    last = i - 1;
     stop = true;
   }
 
   CHECK(bad == 0);
-  CHECK(reads > 0);
   for (auto &epoch : epochs) registry.remove(epoch.get());
   published.collect();
   CHECK(!published.has_retired());
-  CHECK(published.get()->n == 4999);
+  CHECK(published.get()->n == last);
 }
 
 TEST_CASE("an old value waits for a reader that's mid-read") {

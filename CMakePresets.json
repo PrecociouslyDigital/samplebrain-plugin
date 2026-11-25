@@ -13,8 +13,7 @@
       "displayName": "Debug build that installs into ~/Library/Audio/Plug-Ins",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "SB_COPY_PLUGIN": "ON",
-        "SB_RTSAN": "ON"
+        "SB_COPY_PLUGIN": "ON"
       }
     },
     {
@@ -45,17 +44,30 @@
         "SB_BUILD_PLUGIN": "OFF",
         "SB_BUILD_BENCH": "OFF"
       }
+    },
+    {
+      "name": "rtsan",
+      "inherits": "base",
+      "displayName": "Engine tests under RealtimeSanitizer, which checks every nonblocking function they call",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SB_SANITIZE": "realtime",
+        "SB_BUILD_PLUGIN": "OFF",
+        "SB_BUILD_BENCH": "OFF"
+      }
     }
   ],
   "buildPresets": [
     { "name": "dev", "configurePreset": "dev" },
     { "name": "release", "configurePreset": "release" },
     { "name": "asan", "configurePreset": "asan" },
-    { "name": "tsan", "configurePreset": "tsan" }
+    { "name": "tsan", "configurePreset": "tsan" },
+    { "name": "rtsan", "configurePreset": "rtsan" }
   ],
   "testPresets": [
     { "name": "asan", "configurePreset": "asan", "output": { "outputOnFailure": true } },
     { "name": "tsan", "configurePreset": "tsan", "output": { "outputOnFailure": true } },
+    { "name": "rtsan", "configurePreset": "rtsan", "output": { "outputOnFailure": true } },
     { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } }
   ]
 }
