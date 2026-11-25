@@ -33,7 +33,7 @@ scripts/patches.sh export ../samplebrain-patched
   depend only on their arguments. `settings.h` lists every parameter once.
 - `engine/cache` holds the memo and disk caches that let undo play an old render straight away.
 - `tests` are property tests on the engine.
-- `bench` times each engine stage.
+- `bench` times each engine stage. Results are in [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Licence
 
