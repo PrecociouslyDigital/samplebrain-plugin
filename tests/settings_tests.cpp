@@ -44,6 +44,7 @@ TEST_CASE("defaults are inside their ranges") {
   CHECK(clamped(BrainSettings{}) == BrainSettings{});
   CHECK(clamped(TargetSettings{}) == TargetSettings{});
   CHECK(clamped(RenderSettings{}) == RenderSettings{});
+  CHECK(clamped(BlockLength{}) == BlockLength{});
 }
 
 TEST_CASE("every setting is part of its stage's key") {
@@ -74,4 +75,45 @@ TEST_CASE("switching a sound changes the render key") {
   on.sound_enabled = {true, true};
   off.sound_enabled = {true, false};
   CHECK(render_key({}, {}, on) != render_key({}, {}, off));
+}
+
+TEST_CASE("a length in ms is that many ms at any rate") {
+  BlockLength length;
+  for (float ms : {0.5f, 22.7f, 100.f, 2000.f})
+    for (unsigned rate : {44100u, 48000u, 96000u}) {
+      length.ms = ms;
+      CHECK(block_samples(length, rate, 93.0) == std::lround(double(ms) * rate / 1000.0));
+    }
+}
+
+TEST_CASE("note lengths follow the tempo") {
+  BlockLength length;
+  length.unit = 1;
+  length.note = 0;
+  // A quarter note at 120 BPM is half a second.
+  CHECK(block_samples(length, 48000, 120.0) == 24000);
+  CHECK(block_samples(length, 48000, 60.0) == 48000);
+
+  // Each note down the list is half as long, and the feels scale it.
+  for (int note = 1; note < int(std::size(note_labels)); ++note) {
+    length.note = note;
+    length.feel = 0;
+    const double straight = 48000.0 / double(1 << note);
+    CHECK(block_samples(length, 48000, 60.0) == std::lround(straight));
+    length.feel = 1;
+    CHECK(block_samples(length, 48000, 60.0) == std::lround(straight * 2.0 / 3.0));
+    length.feel = 2;
+    CHECK(block_samples(length, 48000, 60.0) == std::lround(straight * 1.5));
+  }
+}
+
+TEST_CASE("a length shows the controls for its unit") {
+  BlockLength length;
+  CHECK(length_param_applies(length, "ms"));
+  CHECK(!length_param_applies(length, "note"));
+  length.unit = 1;
+  CHECK(!length_param_applies(length, "ms"));
+  CHECK(length_param_applies(length, "note"));
+  CHECK(length_param_applies(length, "feel"));
+  CHECK(length_param_applies(length, "unit"));
 }

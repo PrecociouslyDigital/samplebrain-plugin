@@ -4,6 +4,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "core/settings.h"
+#include "model.h"
 
 namespace sb::plugin {
 
@@ -75,7 +76,17 @@ private:
   juce::Label brain_users_;
   juce::ListBox samples_{"samples", this};
   juce::TextButton add_samples_{"Add..."}, remove_sample_{"Remove"};
-  std::vector<std::unique_ptr<ParamControl>> brain_controls_;
+  // A control, how to read what it shows, and whether it applies.
+  template <class Owner> struct Bound {
+    std::unique_ptr<ParamControl> control;
+    std::function<double(const Owner &)> read;
+    std::function<bool(const Owner &)> applies;
+  };
+  template <class Owner, class Field>
+  void bind(std::vector<Bound<Owner>> &, std::span<const ParamInfo>, Field field,
+            std::type_identity_t<std::function<void(const std::function<void(Owner &)> &)>> edit);
+
+  std::vector<Bound<BrainDefinition>> brain_controls_;
   juce::TextButton build_{"Build brain"}, cancel_{"Cancel"};
   juce::Label brain_status_;
 
@@ -83,7 +94,7 @@ private:
   juce::Label clip_status_;
   juce::Component clip_panel_;
   juce::Viewport clip_view_;
-  std::vector<std::unique_ptr<ParamControl>> clip_controls_;
+  std::vector<Bound<ClipSettings>> clip_controls_;
 
   std::unique_ptr<juce::FileChooser> chooser_;
   juce::String brain_id_;

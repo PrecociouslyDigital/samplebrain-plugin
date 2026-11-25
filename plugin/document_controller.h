@@ -116,6 +116,8 @@ struct BrainState {
   std::uint64_t revision = 0;
   // Jobs looking for or loading a built brain.
   int loading = 0;
+  // The tempo its keys were last looked up at.
+  double tempo = 0;
 
   bool busy() const { return loading > 0 || build != nullptr; }
 
@@ -175,12 +177,16 @@ protected:
 
 private:
   void didEnableAudioSourceSamplesAccess(juce::ARAAudioSource *, bool enable) override;
+  void doUpdateMusicalContextContent(juce::ARAMusicalContext *,
+                                     juce::ARAContentUpdateScopes) override;
   void doUpdateAudioSourceContent(juce::ARAAudioSource *,
                                   juce::ARAContentUpdateScopes) override;
   void timerCallback() override;
 
   std::vector<SamplebrainAudioModification *> modifications();
   std::vector<unsigned> rates_for(const juce::String &brain_id);
+  // The tempo where the earliest clip using the brain starts.
+  double brain_tempo(const juce::String &brain_id);
   void brain_changed(BrainState &);
   void refresh_keys(BrainState &);
   // Runs work on the pool, counting as one of the brain's loads until it

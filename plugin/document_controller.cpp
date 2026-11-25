@@ -2,6 +2,7 @@
 
 #include <thread>
 
+#include <ARA_Library/Utilities/ARATimelineConversion.h>
 #include <juce_audio_formats/juce_audio_formats.h>
 
 #include "playback_renderer.h"
@@ -15,6 +16,35 @@ constexpr int timer_ms = 50;
 // start a render for every step. A clip's first render skips the wait:
 // REAPER takes back sample access about half a second after creating it.
 const juce::RelativeTime render_pause = juce::RelativeTime::milliseconds(300);
+
+// For clips the host gives no tempo for.
+constexpr double default_tempo = 120.0;
+
+// Where a clip starts on the timeline, if it's on it.
+const juce::ARAPlaybackRegion *first_region(const SamplebrainAudioModification &m) {
+  const juce::ARAPlaybackRegion *first = nullptr;
+  for (auto *region : m.getPlaybackRegions<juce::ARAPlaybackRegion>())
+    if (!first || region->getStartInPlaybackTime() < first->getStartInPlaybackTime())
+      first = region;
+  return first;
+}
+
+// Quarter notes per minute where the region starts.
+double tempo_at(const juce::ARAPlaybackRegion &region) {
+  using Reader = ARA::PlugIn::HostContentReader<ARA::kARAContentTypeTempoEntries>;
+  const Reader reader(region.getRegionSequence()->getMusicalContext());
+  if (!reader || reader.getEventCount() < 2) return default_tempo;
+  const ARA::TempoConverter<Reader> converter(reader);
+  const double start = region.getStartInPlaybackTime();
+  constexpr double step = 0.001;
+  return 60.0 * (converter.getQuarterForTime(start + step) - converter.getQuarterForTime(start)) /
+         step;
+}
+
+double clip_tempo(const SamplebrainAudioModification &m) {
+  const auto *region = first_region(m);
+  return region ? tempo_at(*region) : default_tempo;
+}
 
 // Runs on the message thread if the target is still alive.
 template <class T, class F> void post(juce::WeakReference<T> target, F &&f) {
@@ -162,6 +192,16 @@ SamplebrainDocumentController::rates_for(const juce::String &brain_id) {
   return rates;
 }
 
+double SamplebrainDocumentController::brain_tempo(const juce::String &brain_id) {
+  const juce::ARAPlaybackRegion *first = nullptr;
+  for (auto *m : modifications())
+    if (m->settings.brain_id == brain_id)
+      if (auto *region = first_region(*m);
+          region && (!first || region->getStartInPlaybackTime() < first->getStartInPlaybackTime()))
+        first = region;
+  return first ? tempo_at(*first) : default_tempo;
+}
+
 void SamplebrainDocumentController::edit_brain(
     const juce::String &id, const std::function<void(BrainDefinition &)> &edit) {
   if (auto *brain = find_brain(id)) {
@@ -208,10 +248,11 @@ struct KeyLookup {
 // Works out the key the brain's samples and settings give now, and loads
 // that brain straight away if it's already built.
 void SamplebrainDocumentController::refresh_keys(BrainState &brain) {
+  brain.tempo = brain_tempo(brain.definition.id);
   for (unsigned rate : rates_for(brain.definition.id))
     load(
         brain,
-        [engine = engine_, definition = brain.definition, rate] {
+        [engine = engine_, definition = brain.definition.at(rate, brain.tempo), rate] {
           KeyLookup found;
           try {
             auto sounds = engine->load_sounds(definition, rate);
@@ -249,7 +290,7 @@ void SamplebrainDocumentController::build_brain(const juce::String &id) {
   changed();
   engine_->pool().addJob([engine = engine_, self = juce::WeakReference(this),
                           definition = brain->definition, revision = brain->revision,
-                          rates, progress] {
+                          bpm = brain_tempo(id), rates, progress] {
     ProgressScope scope(progress.get());
     std::map<unsigned, LoadedSounds> sounds;
     std::map<unsigned, LoadedBrain> built;
@@ -257,12 +298,13 @@ void SamplebrainDocumentController::build_brain(const juce::String &id) {
     try {
       for (unsigned rate : rates) {
         progress->report("reading samples");
-        auto s = engine->load_sounds(definition, rate);
+        const BrainDefinition at = definition.at(rate, bpm);
+        auto s = engine->load_sounds(at, rate);
         if (!s) {
           error = s.error();
           break;
         }
-        auto b = engine->brain(definition, *s, rate, true);
+        auto b = engine->brain(at, *s, rate, true);
         if (!b) {
           error = b.error();
           break;
@@ -354,6 +396,16 @@ void SamplebrainDocumentController::edit_clip(
 
 void SamplebrainDocumentController::changed() {
   ++version_;
+  for (auto &brain : brains_) {
+    const double bpm = brain_tempo(brain->definition.id);
+    const auto &block = brain->definition.block;
+    if (std::ranges::any_of(rates_for(brain->definition.id), [&](unsigned rate) {
+          return block_samples(block, rate, bpm) != block_samples(block, rate, brain->tempo);
+        })) {
+      ++brain->revision;
+      refresh_keys(*brain);
+    }
+  }
   const auto now = juce::Time::getCurrentTime();
   bool scheduled = false;
   for (auto *m : modifications()) {
@@ -377,7 +429,8 @@ SamplebrainDocumentController::wanted(SamplebrainAudioModification &m) {
 
   RenderSettings render = m.settings.render;
   render.sound_enabled = brain->sound_enabled(playing->second);
-  return RenderInputs{playing->second.brain, m.settings.target, render, rate, m.content};
+  return RenderInputs{playing->second.brain, m.settings.target_at(rate, clip_tempo(m)), render,
+                      rate, m.content};
 }
 
 void SamplebrainDocumentController::start_render(SamplebrainAudioModification &m,
@@ -496,6 +549,11 @@ juce::ARAPlaybackRenderer *SamplebrainDocumentController::doCreatePlaybackRender
 
 void SamplebrainDocumentController::didEnableAudioSourceSamplesAccess(
     juce::ARAAudioSource *, bool) {
+  changed();
+}
+
+void SamplebrainDocumentController::doUpdateMusicalContextContent(
+    juce::ARAMusicalContext *, juce::ARAContentUpdateScopes) {
   changed();
 }
 

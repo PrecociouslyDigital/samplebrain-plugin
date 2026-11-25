@@ -74,7 +74,13 @@ render r44.rpp undo.wav
 check "going back to the old settings plays the old render" is_zero "$(residual undo.wav r44.wav)"
 render r44.rpp section.wav --range 1.0 2.0
 check "a section plays the matching part of the render" is_zero "$(residual section.wav r44.wav 44100)"
-render r44.rpp brain_edit.wav --set 'brains.0.settings.block_size=2000'
+render r44.rpp notes.wav --set 'clips.*.target_block.unit=1'
+check "a target block in notes renders differently" not_zero "$(residual notes.wav r44.wav)"
+render r44.rpp notes_slower.wav --set 'clips.*.target_block.unit=1' --tempo 90
+check "a target block in notes follows the tempo" not_zero "$(residual notes_slower.wav notes.wav)"
+render r44.rpp ms_slower.wav --tempo 90
+check "a target block in ms ignores the tempo" is_zero "$(residual ms_slower.wav r44.wav)"
+render r44.rpp brain_edit.wav --set 'brains.0.block.ms=45'
 check "an unbuilt brain edit keeps playing the old brain" is_zero "$(residual brain_edit.wav r44.wav)"
 
 SB_SECOND=$work/clip_b.wav make_project two clip44.wav 44100

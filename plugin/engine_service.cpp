@@ -130,6 +130,8 @@ EngineService::import_brain(const juce::File &file) {
   ImportedBrain imported{{}, {}, {}, brain->rate()};
   imported.definition.name = file.getFileNameWithoutExtension();
   imported.definition.settings = brain_settings(*brain);
+  imported.definition.block.ms =
+      float(imported.definition.settings.block_size) * 1000.f / float(imported.rate);
   int index = 0;
   for (const Sound &sound : brain_sounds(*brain)) {
     const juce::String name = juce::File::createLegalFileName(

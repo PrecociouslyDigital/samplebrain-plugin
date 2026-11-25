@@ -1,7 +1,7 @@
 """Edits a REAPER project's Samplebrain ARA archive and render settings.
 
 usage: rpp_edit.py in.rpp out.rpp [--wav out.wav] [--range START END]
-                   [--set path=json ...]
+                   [--tempo BPM] [--set path=json ...]
 
 A path is dot-separated, with * matching every key or item, for example
 clips.*.target.stereo=true or brains.0.settings.block_size=2000.
@@ -57,6 +57,7 @@ def main():
     p.add_argument("dst")
     p.add_argument("--wav")
     p.add_argument("--range", nargs=2, type=float)
+    p.add_argument("--tempo", type=float)
     p.add_argument("--set", action="append", default=[])
     args = p.parse_args()
     sets = [(s.split("=", 1)[0], json.loads(s.split("=", 1)[1])) for s in args.set]
@@ -67,6 +68,10 @@ def main():
     for n, line in enumerate(lines):
         if args.wav and line.strip().startswith("RENDER_FILE "):
             lines[n] = re.sub(r'RENDER_FILE ".*"', 'RENDER_FILE "%s"' % args.wav, line)
+        if args.tempo and line.strip().startswith("TEMPO "):
+            parts = line.split()
+            parts[1] = repr(args.tempo)
+            lines[n] = re.match(r"\s*", line).group(0) + " ".join(parts) + "\n"
         if args.range and line.strip().startswith("RENDER_RANGE "):
             parts = line.split()
             parts[1:4] = ["0", repr(args.range[0]), repr(args.range[1])]

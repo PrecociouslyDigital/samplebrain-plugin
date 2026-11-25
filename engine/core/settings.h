@@ -8,6 +8,7 @@
 // setting only re-renders.
 
 #include <algorithm>
+#include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <type_traits>
@@ -59,6 +60,12 @@ inline constexpr std::string_view window_labels[] = {
 inline constexpr std::string_view algorithm_labels[] = {
     "basic", "reversed", "synaptic", "slide"};
 
+inline constexpr std::string_view length_unit_labels[] = {"ms", "notes"};
+inline constexpr std::string_view note_labels[] = {
+    "1/4", "1/8", "1/16", "1/32", "1/64", "1/128", "1/256"};
+inline constexpr std::string_view feel_labels[] = {"straight", "triplet",
+                                                   "dotted"};
+
 // clang-format off
 #define SB_BRAIN_SETTINGS(X)                                                   \
   X(block_size, "Block size", (IntParam{10, 99999, 1000}))                     \
@@ -89,6 +96,14 @@ inline constexpr std::string_view algorithm_labels[] = {
   X(target_mix,  "Target mix",       (FloatParam{0.f, 1.f, 0.f}))              \
   X(volume,      "Volume",           (FloatParam{0.f, 1.f, 0.5f}))             \
   X(seed,        "Seed",             (IntParam{0, 99999, 0}))
+
+// A block's length, for the brain and for the target. The default is about
+// the old 1000 samples at 44.1 kHz.
+#define SB_LENGTH_SETTINGS(X, PREFIX)                                          \
+  X(unit, PREFIX " in",     (ChoiceParam{length_unit_labels, 0}))           \
+  X(ms,   PREFIX " (ms)",   (FloatParam{0.5f, 2000.f, 22.7f}))              \
+  X(note, PREFIX " (note)", (ChoiceParam{note_labels, 4}))                  \
+  X(feel, PREFIX " feel",   (ChoiceParam{feel_labels, 0}))
 // clang-format on
 
 #define SB_FIELD(name, label, kind)                                            \
@@ -117,6 +132,12 @@ struct RenderSettings {
   bool operator==(const RenderSettings &) const = default;
 };
 
+struct BlockLength {
+  SB_LENGTH_SETTINGS(SB_FIELD, "")
+  bool in_notes() const { return unit == 1; }
+  bool operator==(const BlockLength &) const = default;
+};
+
 #pragma clang diagnostic pop
 
 #undef SB_FIELD
@@ -133,6 +154,10 @@ inline constexpr ParamInfo target_params[] = {
     SB_TARGET_SETTINGS(SB_TARGET_INFO)};
 inline constexpr ParamInfo render_params[] = {
     SB_RENDER_SETTINGS(SB_RENDER_INFO)};
+inline constexpr ParamInfo brain_length_params[] = {
+    SB_LENGTH_SETTINGS(SB_BRAIN_INFO, "Block size")};
+inline constexpr ParamInfo target_length_params[] = {
+    SB_LENGTH_SETTINGS(SB_TARGET_INFO, "Target block size")};
 
 #undef SB_BRAIN_INFO
 #undef SB_TARGET_INFO
@@ -153,6 +178,11 @@ inline constexpr ParamInfo render_params[] = {
 SB_DEFINE_VISIT(BrainSettings, SB_BRAIN_SETTINGS, brain_params)
 SB_DEFINE_VISIT(TargetSettings, SB_TARGET_SETTINGS, target_params)
 SB_DEFINE_VISIT(RenderSettings, SB_RENDER_SETTINGS, render_params)
+
+// The two length tables differ only in their labels.
+#define SB_LENGTH_LIST(X) SB_LENGTH_SETTINGS(X, "")
+SB_DEFINE_VISIT(BlockLength, SB_LENGTH_LIST, brain_length_params)
+#undef SB_LENGTH_LIST
 
 #undef SB_VISIT
 #undef SB_DEFINE_VISIT
@@ -178,6 +208,23 @@ template <class T> T clamp_to(const ParamKind &kind, T value) {
           return std::clamp<T>(value, k.min, k.max);
       },
       kind);
+}
+
+// Samples per block at a rate. The tempo (quarter notes per minute) only
+// matters for note lengths.
+inline int block_samples(const BlockLength &length, unsigned rate, double bpm) {
+  constexpr double feel_scale[] = {1.0, 2.0 / 3.0, 1.5};
+  const double quarters = 4.0 / double(4 << length.note) * feel_scale[length.feel];
+  const double seconds =
+      length.in_notes() ? quarters * 60.0 / bpm : double(length.ms) / 1000.0;
+  return int(std::lround(seconds * double(rate)));
+}
+
+// Whether a length control matches the chosen unit.
+inline bool length_param_applies(const BlockLength &length, std::string_view id) {
+  if (id == "ms") return !length.in_notes();
+  if (id == "note" || id == "feel") return length.in_notes();
+  return true;
 }
 
 // Pulls every field into its listed range.

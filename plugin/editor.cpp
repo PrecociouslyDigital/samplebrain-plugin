@@ -160,29 +160,47 @@ SamplebrainEditor::SamplebrainEditor(SamplebrainProcessor &p)
   };
   clip_box_.onChange = [this] { refresh(); };
 
-  for (const ParamInfo &info : brain_params)
-    brain_controls_.push_back(std::make_unique<ParamControl>(info, [this, id = info.id](double v) {
-      if (auto *dc = controller())
-        dc->edit_brain(brain_id_, [&](BrainDefinition &d) { set_field(d.settings, id, v); });
-    }));
-  for (auto &c : brain_controls_) addAndMakeVisible(*c);
-
-  auto add_clip_control = [this](const ParamInfo &info, auto field_of) {
-    clip_controls_.push_back(std::make_unique<ParamControl>(info, [this, id = info.id, field_of](double v) {
-      if (auto *c = clip())
-        controller()->edit_clip(*c, [&](ClipSettings &s) { set_field(field_of(s), id, v); });
-    }));
-    clip_panel_.addAndMakeVisible(*clip_controls_.back());
+  auto edit_brain = [this](const std::function<void(BrainDefinition &)> &edit) {
+    if (auto *dc = controller()) dc->edit_brain(brain_id_, edit);
   };
-  for (const ParamInfo &info : target_params)
-    add_clip_control(info, [](ClipSettings &s) -> TargetSettings & { return s.target; });
-  for (const ParamInfo &info : render_params)
-    add_clip_control(info, [](ClipSettings &s) -> RenderSettings & { return s.render; });
+  auto edit_clip = [this](const std::function<void(ClipSettings &)> &edit) {
+    if (auto *c = clip()) controller()->edit_clip(*c, edit);
+  };
+  bind(brain_controls_, brain_length_params, [](auto &d) -> auto & { return d.block; }, edit_brain);
+  bind(brain_controls_, brain_params, [](auto &d) -> auto & { return d.settings; }, edit_brain);
+  for (auto &c : brain_controls_) addAndMakeVisible(*c.control);
+
+  bind(clip_controls_, target_length_params, [](auto &s) -> auto & { return s.target_block; },
+       edit_clip);
+  bind(clip_controls_, target_params, [](auto &s) -> auto & { return s.target; }, edit_clip);
+  bind(clip_controls_, render_params, [](auto &s) -> auto & { return s.render; }, edit_clip);
+  for (auto &c : clip_controls_) clip_panel_.addAndMakeVisible(*c.control);
 
   setResizable(true, false);
   setSize(760, 720);
   startTimerHz(10);
   refresh();
+}
+
+template <class Owner, class Field>
+void SamplebrainEditor::bind(std::vector<Bound<Owner>> &out, std::span<const ParamInfo> params,
+                             Field field,
+                             std::type_identity_t<std::function<void(const std::function<void(Owner &)> &)>> edit) {
+  using S = std::remove_cvref_t<std::invoke_result_t<Field, Owner &>>;
+  for (const ParamInfo &info : params) {
+    // Set from the block length instead.
+    if (info.id == "block_size") continue;
+    std::function<bool(const Owner &)> applies = [](const Owner &) { return true; };
+    if constexpr (std::is_same_v<S, BlockLength>)
+      applies = [field, id = info.id](const Owner &o) { return length_param_applies(field(o), id); };
+    out.push_back(
+        {std::make_unique<ParamControl>(info,
+                                        [edit, field, id = info.id](double v) {
+                                          edit([&](Owner &o) { set_field(field(o), id, v); });
+                                        }),
+         [field, id = info.id](const Owner &o) { return get_field(field(o), id); },
+         std::move(applies)});
+  }
 }
 
 SamplebrainEditor::~SamplebrainEditor() { stopTimer(); }
@@ -289,13 +307,16 @@ void SamplebrainEditor::refresh() {
   for (auto *comp : std::initializer_list<juce::Component *>{
            &samples_, &remove_sample_, &build_, &export_brain_})
     comp->setEnabled(b != nullptr);
-  for (auto &control : brain_controls_) control->setEnabled(b != nullptr);
+  const BrainDefinition shown_brain = b ? b->definition : BrainDefinition{};
+  for (auto &bound : brain_controls_) {
+    bound.control->setEnabled(b != nullptr);
+    bound.control->setVisible(bound.applies(shown_brain));
+    bound.control->set_value(bound.read(shown_brain));
+  }
   if (b) {
     const int users = dc->clips_using(brain_id_);
     brain_users_.setText(juce::String(users) + (users == 1 ? " clip" : " clips"),
                          juce::dontSendNotification);
-    for (std::size_t i = 0; i < brain_controls_.size(); ++i)
-      brain_controls_[i]->set_value(get_field(b->definition.settings, brain_params[i].id));
     build_.setButtonText(b->needs_build() ? "Build brain *" : "Build brain");
     export_brain_.setEnabled(!b->playing.empty());
   }
@@ -303,13 +324,12 @@ void SamplebrainEditor::refresh() {
   samples_.repaint();
 
   clip_view_.setEnabled(c != nullptr);
-  if (c) {
-    std::size_t i = 0;
-    for (const ParamInfo &info : target_params)
-      clip_controls_[i++]->set_value(get_field(c->settings.target, info.id));
-    for (const ParamInfo &info : render_params)
-      clip_controls_[i++]->set_value(get_field(c->settings.render, info.id));
+  const ClipSettings shown_clip = c ? c->settings : ClipSettings{};
+  for (auto &bound : clip_controls_) {
+    bound.control->setVisible(bound.applies(shown_clip));
+    bound.control->set_value(bound.read(shown_clip));
   }
+  resized();
   refresh_progress();
 }
 
@@ -418,7 +438,8 @@ void SamplebrainEditor::resized() {
   sample_buttons.removeFromLeft(gap);
   remove_sample_.setBounds(sample_buttons.removeFromLeft(90));
 
-  for (auto &c : brain_controls_) c->setBounds(row());
+  for (auto &bound : brain_controls_)
+    if (bound.control->isVisible()) bound.control->setBounds(row());
   auto build_row = row();
   build_.setBounds(build_row.removeFromLeft(130));
   build_row.removeFromLeft(gap);
@@ -434,12 +455,13 @@ void SamplebrainEditor::resized() {
 
   clip_view_.setBounds(area);
   const int width = area.getWidth() - clip_view_.getScrollBarThickness();
-  clip_panel_.setSize(width, int(clip_controls_.size()) * (row_height + gap));
   int y = 0;
-  for (auto &c : clip_controls_) {
-    c->setBounds(0, y, width, row_height);
-    y += row_height + gap;
-  }
+  for (auto &bound : clip_controls_)
+    if (bound.control->isVisible()) {
+      bound.control->setBounds(0, y, width, row_height);
+      y += row_height + gap;
+    }
+  clip_panel_.setSize(width, y);
 }
 
 } // namespace sb::plugin

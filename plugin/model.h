@@ -22,7 +22,17 @@ struct BrainDefinition {
   juce::String id = juce::Uuid().toString();
   juce::String name = "Brain";
   std::vector<BrainSample> samples;
+  // The settings' block_size comes from block, through at().
   BrainSettings settings;
+  BlockLength block;
+
+  // The definition the engine sees at a rate and tempo.
+  BrainDefinition at(unsigned rate, double bpm) const {
+    BrainDefinition resolved = *this;
+    resolved.settings.block_size = block_samples(block, rate, bpm);
+    resolved.settings = clamped(resolved.settings);
+    return resolved;
+  }
 
   std::vector<juce::String> paths() const {
     std::vector<juce::String> paths;
@@ -35,8 +45,16 @@ struct BrainDefinition {
 // sound_enabled comes from the brain when rendering.
 struct ClipSettings {
   juce::String brain_id;
+  // The target's block_size comes from target_block, through target_at().
   TargetSettings target;
+  BlockLength target_block;
   RenderSettings render;
+
+  TargetSettings target_at(unsigned rate, double bpm) const {
+    TargetSettings resolved = target;
+    resolved.block_size = block_samples(target_block, rate, bpm);
+    return clamped(resolved);
+  }
 };
 
 template <Settings S> juce::var to_var(const S &settings) {
