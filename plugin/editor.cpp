@@ -214,7 +214,7 @@ SamplebrainAudioModification *SamplebrainEditor::clip() const {
 
 SamplebrainEditor::Shown SamplebrainEditor::shown() const {
   auto *dc = controller();
-  return {dc ? dc->version() : 0, clips()};
+  return {dc, dc ? dc->version() : 0, clips()};
 }
 
 void SamplebrainEditor::new_brain() {
@@ -246,8 +246,10 @@ void SamplebrainEditor::timerCallback() {
 
 void SamplebrainEditor::refresh() {
   auto *dc = controller();
-  if (!dc) return;
   shown_ = shown();
+  for (auto *child : getChildren()) child->setVisible(dc != nullptr);
+  repaint();
+  if (!dc) return;
 
   // The clips this instance plays.
   const auto all = clips();
@@ -370,10 +372,13 @@ void SamplebrainEditor::listBoxItemClicked(int row, const juce::MouseEvent &e) {
 
 void SamplebrainEditor::paint(juce::Graphics &g) {
   g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
-  if (!isARAEditorView()) {
+  if (!controller()) {
+    const auto &p = static_cast<const SamplebrainProcessor &>(processor);
+    const juce::String message =
+        p.isBoundToARA() ? "The host bound Samplebrain to ARA, but not as an editor."
+                         : "Samplebrain only works as an ARA extension on a clip.";
     g.setColour(juce::Colours::white);
-    g.drawFittedText("Samplebrain only works as an ARA extension on a clip.", getLocalBounds(),
-                     juce::Justification::centred, 2);
+    g.drawFittedText(message, getLocalBounds(), juce::Justification::centred, 2);
   }
 }
 

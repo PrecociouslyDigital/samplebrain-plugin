@@ -50,6 +50,7 @@ private:
   // What the editor last drew from. The clips are included because REAPER can
   // assign them after the editor opens, without bumping the version.
   struct Shown {
+    SamplebrainDocumentController *controller;
     std::uint64_t version;
     std::vector<SamplebrainAudioModification *> clips;
     bool operator==(const Shown &) const = default;
